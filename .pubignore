@@ -1,0 +1,10 @@
+# pub ignores .gitignore where a .pubignore exists, so its entries repeat
+# here.
+.dart_tool/
+coverage/
+doc/
+pubspec.lock
+.DS_Store
+
+# Development material that does not belong in the package.
+.github/

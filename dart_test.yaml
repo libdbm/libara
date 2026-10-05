@@ -1,0 +1,5 @@
+tags:
+  benchmark:
+    skip: "Timing test. Run with: dart test --tags benchmark --run-skipped"
+  scale:
+    skip: "Scalability test. Run with: dart test --tags scale --run-skipped"

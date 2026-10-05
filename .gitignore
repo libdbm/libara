@@ -1,0 +1,8 @@
+.dart_tool/
+coverage/
+doc/api/
+pubspec.lock
+.DS_Store
+.idea
+.claude
+.junie
