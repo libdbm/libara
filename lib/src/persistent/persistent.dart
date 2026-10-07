@@ -8,5 +8,5 @@ import 'command.dart';
 import 'document.dart';
 
 export 'command.dart';
-export 'document.dart' hide check;
+export 'document.dart' hide check, placed;
 export 'edits.dart';

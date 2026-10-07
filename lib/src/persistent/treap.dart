@@ -28,6 +28,33 @@ abstract base class Node<N extends Node<N>> {
   N make(N? left, N? right);
 }
 
+/// The roots of [nodes], each a node with no children, built into one
+/// tree in their order, in time linear in their number.
+///
+/// The tree is the one joining them one by one gives: a node keeps every
+/// earlier node of no higher priority below it on its left, as [join] puts
+/// the right tree on top where the priorities tie. Each node is made once,
+/// when its right subtree is known.
+N? built<N extends Node<N>>(Iterable<N> nodes) {
+  // The right spine still open, each node with the left subtree it was
+  // given; its right subtree is what is closed below it.
+  final spine = <(N, N?)>[];
+  for (final node in nodes) {
+    N? closed;
+    while (spine.isNotEmpty && spine.last.$1.priority <= node.priority) {
+      final (open, left) = spine.removeLast();
+      closed = open.make(left, closed);
+    }
+    spine.add((node, closed));
+  }
+  N? closed;
+  while (spine.isNotEmpty) {
+    final (open, left) = spine.removeLast();
+    closed = open.make(left, closed);
+  }
+  return closed;
+}
+
 /// The roots [left] and [right] joined into one tree, every node of [left]
 /// first.
 N? join<N extends Node<N>>(N? left, N? right) {

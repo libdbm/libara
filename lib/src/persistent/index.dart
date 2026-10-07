@@ -13,6 +13,19 @@ final class Index<V> {
   /// An index with no markers.
   const Index.empty() : this._(null);
 
+  /// An index of [pairs], each marker distinct, built in one pass after
+  /// sorting them by marker.
+  factory Index.of(Iterable<(Marker, V)> pairs) {
+    final sorted = [...pairs]
+      ..sort((one, other) => one.$1.sequence - other.$1.sequence);
+    return Index._(
+      built([
+        for (final (marker, value) in sorted)
+          _Node(marker, value, priorities.priority(), null, null),
+      ]),
+    );
+  }
+
   final _Node<V>? _root;
 
   /// The number of markers.

@@ -8,7 +8,7 @@ import 'dart:math';
 
 import '../attributed/attributed.dart';
 import '../persistent/anchors.dart';
-import '../persistent/document.dart' as persistent show check;
+import '../persistent/document.dart' as persistent show check, placed;
 import '../persistent/persistent.dart';
 import '../range/range.dart';
 import '../range/range.dart' as positions show extent;
@@ -645,9 +645,9 @@ Result<(Document<S>, List<Marker>, List<Marker>)> _place<S>(
 ) {
   final marks = [for (final range in ranges) _mark<S>(range)];
   final notes = [for (final range in flags) _mark<S>(range)];
-  return switch (document.transact([...marks, ...notes])) {
+  return switch (persistent.placed(document, [...marks, ...notes])) {
     Success(:final value) => Success((
-      value.compact(),
+      value,
       [for (final mark in marks) mark.marker],
       [for (final mark in notes) mark.marker],
     )),

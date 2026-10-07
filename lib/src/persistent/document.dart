@@ -334,21 +334,23 @@ final class Document<T> with SequenceBase<T> {
           marks[index].start != marks[index].end,
         ),
     ]);
-    var entries = _index;
-    for (final (at, mark) in marks.indexed) {
-      entries = entries.put(mark.marker, (
-        first: firsts[at]!,
-        last: lasts[at]!,
-        start: mark.start,
-        end: mark.end,
-        attributes: mark.range.attributes,
-      ));
-    }
     return (
       content: _content,
       right: build(Gravity.right),
       left: build(Gravity.left),
-      index: entries,
+      index: Index.of([
+        for (final (at, mark) in marks.indexed)
+          (
+            mark.marker,
+            (
+              first: firsts[at]!,
+              last: lasts[at]!,
+              start: mark.start,
+              end: mark.end,
+              attributes: mark.range.attributes,
+            ),
+          ),
+      ]),
     );
   }
 
@@ -720,6 +722,21 @@ final class Document<T> with SequenceBase<T> {
   Items<T> intersect(Sequence<Object?> other) =>
       Items.of(items).intersect(other);
 }
+
+/// Version 0 of [fresh]'s items with every one of [marks] placed: what
+/// `fresh.transact(marks).compact()` gives, for a [fresh] document holding
+/// no marks. For the library; hidden from the public `libara` library.
+///
+/// Placing several marks at once already labels their endpoints evenly,
+/// which is all compacting would do besides dropping the history, so the
+/// history is dropped and nothing is built twice.
+Result<Document<T>> placed<T>(Document<T> fresh, List<Mark<T>> marks) => fresh
+    .transact(marks)
+    .map(
+      (document) => marks.length > 1 && fresh._index.length == 0
+          ? Document._(document._parts, 0, null, null)
+          : document.compact(),
+    );
 
 /// Whether [document] keeps its invariants: the content tree and both
 /// endpoint trees keep their own, and the marker index and the trees agree,

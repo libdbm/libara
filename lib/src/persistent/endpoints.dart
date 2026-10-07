@@ -35,21 +35,19 @@ final class Endpoints<O> {
   ///
   /// The positions must never decrease and the labels must increase, as in
   /// [entries].
-  factory Endpoints.of(Iterable<(Endpoint<O>, bool)> endpoints) {
-    _Node<O>? root;
-    for (final (endpoint, elsewhere) in endpoints) {
-      final leaf = _Node.leaf(
-        endpoint.position,
-        endpoint.label,
-        endpoint.owner,
-        endpoint.start,
-        endpoint.partner,
-        elsewhere,
-      );
-      root = join(root, leaf);
-    }
-    return Endpoints._(root);
-  }
+  factory Endpoints.of(Iterable<(Endpoint<O>, bool)> endpoints) => Endpoints._(
+    built([
+      for (final (endpoint, elsewhere) in endpoints)
+        _Node.leaf(
+          endpoint.position,
+          endpoint.label,
+          endpoint.owner,
+          endpoint.start,
+          endpoint.partner,
+          elsewhere,
+        ),
+    ]),
+  );
 
   final _Node<O>? _root;
 
