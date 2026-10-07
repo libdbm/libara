@@ -7,15 +7,23 @@ import 'value.dart';
 /// Attributed Range Algebra.
 ///
 /// Attributes are immutable. Every edit returns a new range.
-final class ARange extends Range {
+///
+/// A caller may extend it, so that a range says by its class what kind of
+/// thing it is, as a command does when it asks a grammar for markup of one
+/// kind. Equality is still by position and attributes alone, and a document
+/// stores every range it is given as a plain [ARange], so the class never
+/// outlives the command it was handed in.
+base class ARange extends Range {
   ARange._(this.start, this.length, Map<String, Value> attributes)
     : attributes = Map.unmodifiable(attributes);
 
   /// An attributed range at the position of [range].
   ///
   /// The map is copied, so later changes to the argument have no effect.
-  factory ARange.from(Range range, Map<String, Value> attributes) =>
-      ARange._(range.start, range.length, attributes);
+  ARange.from(Range range, Map<String, Value> attributes)
+    : start = range.start,
+      length = range.length,
+      attributes = Map.unmodifiable(attributes);
 
   /// A range of [length] items from [start] carrying [attributes]: a
   /// [Kind.invalid] failure for a negative [start] or [length].

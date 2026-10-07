@@ -1,6 +1,7 @@
 import 'package:libara/src/attributed/arange.dart';
 import 'package:libara/src/attributed/attribute.dart';
 import 'package:libara/src/attributed/value.dart';
+import 'package:libara/src/persistent/persistent.dart';
 import 'package:libara/src/range/range.dart';
 import 'package:libara/src/sequence/sequence.dart';
 import 'package:test/test.dart';
@@ -9,7 +10,30 @@ import '../support.dart';
 
 final header = Value.of('header').unwrap();
 
+/// A caller's kind of attributed range, saying by its class what it is.
+final class Kept extends ARange {
+  Kept(super.range, super.attributes) : super.from();
+}
+
 void main() {
+  group('A subclass of ARange', () {
+    test('equals a plain ARange at its position with its attributes', () {
+      final kept = Kept(Range.create(1, 2).unwrap(), {'k': const Num(1)});
+      final plain = tagged(1, 2, attributes: {'k': const Num(1)});
+      expect(kept, plain);
+      expect(plain, kept);
+      expect(kept.hashCode, plain.hashCode);
+    });
+
+    test('is stored by a document as a plain ARange', () {
+      final mark = Mark<int>(Kept(Range.create(0, 1).unwrap(), {}));
+      final document = Document.of(Text.of('ab')).apply(mark).unwrap();
+      final stored = document.resolve(mark.marker)!;
+      expect(stored.runtimeType, ARange);
+      expect(stored, mark.range);
+    });
+  });
+
   test('create reports a negative start or length as invalid', () {
     expect(ARange.create(-1, 2), invalid);
     expect(ARange.create(0, -1, attributes: {'k': const Num(1)}), invalid);

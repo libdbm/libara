@@ -1,3 +1,10 @@
+## Unreleased
+
+- `ARange` is a `base` class and `ARange.from` a generative constructor, so
+  a caller can extend it to say by a range's class what kind of thing it
+  is. Equality is unchanged, and a document stores every range as a plain
+  `ARange`.
+
 ## 0.1.0
 
 First release.
