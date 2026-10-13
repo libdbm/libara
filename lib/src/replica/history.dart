@@ -101,7 +101,8 @@ final class History {
           history
               ._delete(stamp, span.start, span.length)
               ._insert(stamp, index, span.start, items.length),
-        Mark() || Unmark() || Update() => history,
+        // A replica refuses a move when it is committed.
+        Mark() || Unmark() || Update() || Move() => history,
       };
     }
     return history;
@@ -220,6 +221,7 @@ final class History {
             .map((put) => (put.$1, [...done.$2, ...put.$2])),
       ),
     Mark() || Unmark() || Update() => Success((this, const [])),
+    Move() => Failure(Kind.invalid, 'replica: a move is not replicated'),
   };
 
   /// The current range of a range at [range] in the context holding the

@@ -53,6 +53,92 @@ final class Model {
     );
   }
 
+  /// Where [position] goes when the items in `[from, to)` move to before
+  /// [place], as an endpoint with [gravity]: with the items when strictly
+  /// among them, and otherwise as deleting them and inserting them again
+  /// at [place] would carry it. A move to an edge of the items leaves it.
+  static int carry(int position, Gravity gravity, int from, int to, int place) {
+    if (place == from || place == to) {
+      return position;
+    }
+    final length = to - from;
+    final at = place < from ? place : place - length;
+    if (from < position && position < to) {
+      return at + position - from;
+    }
+    final kept = position <= from ? position : position - length;
+    return kept > at || kept == at && gravity == Gravity.right
+        ? kept + length
+        : kept;
+  }
+
+  /// The items in `[from, to)` moved to before [place], each range as
+  /// `Document.apply` documents a move: one wholly among the items goes
+  /// with them, one crossing an edge of them is decided by [policy], and
+  /// every other end moves as [carry] says. What was decided of each
+  /// crossing range, or `null`, with the model unchanged, where the move
+  /// fails.
+  Map<Marker, Crossing>? move(int from, int to, int place, Crossing policy) {
+    final decided = <Marker, Crossing>{};
+    if (place == from || place == to) {
+      return decided;
+    }
+    final at = place < from ? place : place - (to - from);
+    final moved = <Marker, (int, int, Map<String, Value>, Gravity, Gravity)>{};
+    for (final MapEntry(key: marker, value: range) in ranges.entries) {
+      final (_, _, attributes, first, last) = range;
+      final read = this.read(marker)!;
+      var (start, end) = (read.start, read.end);
+      // Whether its start, and its end, go with the items.
+      var (leads, trails) = (false, false);
+      final within =
+          from <= start &&
+          end <= to &&
+          (start < end || (from < start && start < to));
+      if (within) {
+        (leads, trails) = (true, true);
+      } else if (start < to && from < end && !(start < from && to < end)) {
+        decided[marker] = policy;
+        final trailing = start < from;
+        switch (policy) {
+          case Crossing.refuse:
+            return null;
+          case Crossing.clamp:
+            if (trailing) {
+              end = from;
+            } else {
+              start = to;
+            }
+          case Crossing.follow:
+            if (trailing) {
+              trails = true;
+            } else {
+              leads = true;
+            }
+        }
+      }
+      int put(int position, Gravity gravity, bool inside) => inside
+          ? at + position - from
+          : carry(position, gravity, from, to, place);
+      final (placed, ended) = (
+        put(start, first, leads),
+        put(end, last, trails),
+      );
+      // Only following the items fails for a range turned inside out; any
+      // other reads as empty at its start, as an insertion leaves it.
+      if (ended < placed && decided[marker] == Crossing.follow) {
+        return null;
+      }
+      moved[marker] = (placed, ended, attributes, first, last);
+    }
+    final taken = items.sublist(from, to);
+    items
+      ..removeRange(from, to)
+      ..insertAll(at, taken);
+    ranges.addAll(moved);
+    return decided;
+  }
+
   /// A marker's range as read: an end before the start reads as zero-length
   /// at the start.
   ARange? read(Marker marker) {
@@ -80,6 +166,24 @@ void ordered(List<ARange> ranges, String reason) {
       isTrue,
       reason: '$reason out of start order at $index',
     );
+  }
+}
+
+/// [actual], the commands a transaction logged, are [expected]: each the
+/// same command, but for a move, logged anew with what it decided.
+void logs(
+  List<Command<int>> actual,
+  List<Command<int>> expected,
+  String reason,
+) {
+  expect(actual, hasLength(expected.length), reason: reason);
+  for (final (index, command) in expected.indexed) {
+    if (command case Move(:final span, :final to)) {
+      final logged = actual[index] as Move<int>;
+      expect((logged.span, logged.to), (span, to), reason: reason);
+    } else {
+      expect(identical(actual[index], command), isTrue, reason: reason);
+    }
   }
 }
 
@@ -218,12 +322,18 @@ void scripts({
 
     for (var step = 0; step < 60; step++) {
       final reason = 'script $script step $step';
+      // What a move this step does with a range crossing it; whether the
+      // model says the command fails; and a move's items, place, and what
+      // the model decided of the ranges crossing it.
+      var policy = Crossing.values[random.nextInt(3)];
+      var failing = false;
+      (int, int, int, Map<Marker, Crossing>)? moving;
 
       /// A random command that fits the model, applied to the model.
       Command<int> next() {
         final length = model.items.length;
         final live = model.ranges.keys.toList();
-        final choice = random.nextInt(12);
+        final choice = random.nextInt(14);
         if (choice < 3) {
           final at = random.nextInt(length + 1);
           final added = List.generate(
@@ -248,6 +358,22 @@ void scripts({
           final to = from + random.nextInt(min(10, length - from) + 1);
           model.delete(from, to);
           return Delete(span(from, to - from));
+        } else if (choice >= 12 && length > 0) {
+          final from = random.nextInt(length);
+          final to = from + 1 + random.nextInt(min(6, length - from));
+          // Anywhere outside the items, their edges included.
+          final places = [
+            for (var place = 0; place <= length; place++)
+              if (place <= from || place >= to) place,
+          ];
+          final place = places[random.nextInt(places.length)];
+          final decided = model.move(from, to, place, policy);
+          if (decided == null) {
+            failing = true;
+          } else {
+            moving = (from, to, place, decided);
+          }
+          return Move(span(from, to - from), place);
         } else if (choice <= 9 || live.isEmpty) {
           final from = random.nextInt(length + 1);
           final to = from + random.nextInt(length - from + 1);
@@ -283,31 +409,57 @@ void scripts({
 
       // Now and then, apply a few commands as one transaction.
       if (random.nextInt(6) == 0) {
+        // Clamping never fails, so no move can fail the transaction.
+        policy = Crossing.clamp;
         final count = 1 + random.nextInt(4);
         final commands = [for (var index = 0; index < count; index++) next()];
-        final result = document.transact(commands);
+        final result = document.transact(commands, crossing: (_) => policy);
         expect(
           result,
           isA<Success<Document<int>>>(),
           reason: '$reason $commands',
         );
         document = result.or(document);
-        expect(document.commands, commands, reason: reason);
+        logs(document.commands, commands, reason);
         history.add(model.copy());
       } else {
         final command = next();
         final flatten = random.nextInt(4) == 0;
-        final result = document.apply(command, flatten: flatten);
-        expect(
-          result,
-          isA<Success<Document<int>>>(),
-          reason: '$reason $command',
+        final before = document;
+        final result = document.apply(
+          command,
+          flatten: flatten,
+          crossing: (_) => policy,
         );
-        document = result.or(document);
-        if (flatten) {
-          history.last = model.copy();
+        if (failing) {
+          expect(result, isA<Failure<Document<int>>>(), reason: reason);
         } else {
-          history.add(model.copy());
+          expect(
+            result,
+            isA<Success<Document<int>>>(),
+            reason: '$reason $command',
+          );
+          document = result.or(document);
+          if (flatten) {
+            history.last = model.copy();
+          } else {
+            history.add(model.copy());
+          }
+          if (moving case (final from, final to, final place, final decided)) {
+            final logged = document.commands.last as Move<int>;
+            expect(logged.crossings, decided, reason: '$reason decided');
+            if (!flatten) {
+              for (var at = 0; at <= before.length; at++) {
+                for (final gravity in Gravity.values) {
+                  expect(
+                    document.map(before, at, gravity).unwrap(),
+                    Model.carry(at, gravity, from, to, place),
+                    reason: '$reason map $at $gravity',
+                  );
+                }
+              }
+            }
+          }
         }
       }
       // Now and then, compact and keep editing the compacted document.

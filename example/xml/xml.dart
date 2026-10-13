@@ -17,7 +17,10 @@ import 'package:petitparser/petitparser.dart'
 /// empty-element tag alone.
 ///
 /// Markup that does not parse, an unterminated comment, an end tag that
-/// closes nothing open, and a start tag never closed are diagnostics.
+/// closes nothing open, a start tag never closed, and a bare `&` in text,
+/// one that starts no reference such as `&amp;` or `&#38;`, are
+/// diagnostics. This subset does not resolve references, so text holding
+/// them reads as written.
 final class XML implements Grammar<int> {
   /// An XML grammar.
   const XML();
@@ -33,12 +36,21 @@ final class XML implements Grammar<int> {
       final (elements, errors) = _parse(document, region);
       return (ranges: elements, diagnostics: errors);
     }
-    final tokens = _lex(_Stretch(document.slice(region), region.start));
+    final stretch = _Stretch(document.slice(region), region.start);
+    final tokens = _lex(stretch);
     return (
       ranges: [for (final (token, _) in tokens) token],
       diagnostics: [
         for (final (token, problem) in tokens)
           if (problem != null) ARange.from(token, {'message': string(problem)}),
+        for (final (token, _) in tokens)
+          if (token.get('type') == string('text'))
+            for (final at in _bare(
+              stretch.buffer,
+              token.start - stretch.offset,
+              token.end - stretch.offset,
+            ))
+              _problem(stretch.offset + at, 1, 'bare &'),
       ],
     );
   }
@@ -87,6 +99,39 @@ final class XML implements Grammar<int> {
     ),
   };
 
+  /// Accepts a text edit that reaches into no tag or comment, and leaves
+  /// the markup and its diagnostics as they stand: every token but a run of
+  /// text is markup.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) => kept(
+    document,
+    change,
+    text: (token) => token.get('type') == string('text'),
+  );
+
+  /// [text] with `&` and `<` written as references, which this subset reads
+  /// as text without resolving them.
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => raw
+      ? text
+      : [
+          for (final point in text)
+            ...switch (point) {
+              0x26 => '&amp;'.runes,
+              0x3C => '&lt;'.runes,
+              _ => [point],
+            },
+        ];
+
+  /// A run of text crossing an edge of a move is cut back, and read again
+  /// either side; a tag or a comment is not cut, and an element is moved
+  /// only whole.
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      layer == 2 && range.get('type') == string('text')
+      ? Crossing.clamp
+      : Crossing.refuse;
+
   /// Inserts the tag that [range], zero-length, describes, under [marker],
   /// splitting a text run it falls inside.
   Result<Derivation<int>> _insert(
@@ -108,6 +153,9 @@ final class XML implements Grammar<int> {
       if (current.start < at && at < current.end) {
         if (current.get('type') != string('text')) {
           return Failure(Kind.invalid, 'xml: $at is inside $current');
+        }
+        if (!_parted(_read(document, current), at - current.start)) {
+          return Failure(Kind.invalid, 'xml: $at would cut a reference');
         }
         return Success((
           below: below,
@@ -185,6 +233,10 @@ final class XML implements Grammar<int> {
       final (after, right) = tokens[span.end];
       if (right.get('type') == string('text')) {
         if (left.get('type') == string('text')) {
+          final joined = _read(document, left) + _read(document, right);
+          if (!_parted(joined, left.length)) {
+            return Failure(Kind.invalid, 'xml: $span would join a reference');
+          }
           removed.addAll([before, after]);
           created.add((
             Marker(),
@@ -463,11 +515,55 @@ ARange? _find(List<(Marker, ARange)> pairs, Marker marker) {
   return null;
 }
 
-/// Whether layer 2 of [document] has a diagnostic over [token].
+/// Whether layer 2 of [document] has a diagnostic within [token]: over the
+/// whole of it for a tag or comment, or over a bare `&` in a text run.
 bool _flawed(Layered<int> document, ARange token) => document
     .diagnostics(2)
     .items
-    .any((flaw) => flaw.start == token.start && flaw.length == token.length);
+    .any((flaw) => token.start <= flaw.start && flaw.end <= token.end);
+
+/// Where [text] has a bare `&`, one that starts no reference, from [start]
+/// to [end]: found by searching for `&` alone, so a run of text without one
+/// costs a scan and no copy.
+List<int> _bare(String text, [int start = 0, int? end]) {
+  final last = end ?? text.length;
+  final found = <int>[];
+  for (
+    var at = text.indexOf('&', start);
+    at >= 0 && at < last;
+    at = text.indexOf('&', at + 1)
+  ) {
+    final reference = _reference.matchAsPrefix(text, at);
+    if (reference == null || reference.end > last) {
+      found.add(at);
+    }
+  }
+  return found;
+}
+
+/// An entity or character reference.
+final _reference = RegExp(
+  r'&(?:[A-Za-z_][A-Za-z0-9_.-]*|#[0-9]+|#x[0-9A-Fa-f]+);',
+);
+
+/// Whether [text] cut at [at] has the same bare `&`s as it has whole, so a
+/// tag there, or taking one away from there, changes no diagnostic.
+bool _parted(String text, int at) {
+  final apart = [
+    ..._bare(text.substring(0, at)),
+    for (final found in _bare(text.substring(at))) found + at,
+  ];
+  final whole = _bare(text);
+  return apart.length == whole.length &&
+      apart.indexed.every((pair) => pair.$2 == whole[pair.$1]);
+}
+
+/// The text of [document] under [range], one character per code point
+/// in the BMP, as the lexer reads it.
+String _read(Layered<int> document, Range range) => String.fromCharCodes([
+  for (final point in document.slice(range).items)
+    point > 0xFFFF ? 0xFFFD : point,
+]);
 
 /// Whether [a] and [b] hold the same attributes.
 bool _alike(Map<String, Value> a, Map<String, Value> b) =>

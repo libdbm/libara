@@ -287,6 +287,33 @@ void main() {
       expect(check(change.document), const Success<void>(null));
     });
 
+    test('a derivation places a range it removes again under its marker', () {
+      // A grammar whose edit respells a range's edges cannot carry the
+      // range across, since a range only ever shrinks inward: it removes
+      // the range and places it again, and the marker stays.
+      final document = Layered.of(Text.of('[a]'), Placing()).unwrap();
+      final group = document.markers(3).single.$1;
+      final change = document
+          .apply(Edit(3, Update<Object?>(group, const {})))
+          .unwrap();
+      final (marker, range) = change.document.markers(3).single;
+      expect(marker, group);
+      expect((range.start, range.length), (0, 2));
+    });
+
+    test('a derivation placing a range it removes twice is invalid', () {
+      // Removing the marker frees it to be placed once, not twice: the
+      // derivation is refused when checked, before anything is marked.
+      final document = Layered.of(Text.of('[a]'), Doubling()).unwrap();
+      final group = document.markers(3).single.$1;
+      final result = document.apply(Edit(3, Update<Object?>(group, const {})));
+      expect(result, invalid);
+      expect(
+        (result as Failure<Change<int>>).message,
+        contains('creates $group, which is in use'),
+      );
+    });
+
     test('a derivation that does not fit is invalid', () {
       final before = Layered.of(Text.of('[a]'), Brackets()).unwrap();
       final group = before.markers(3).single.$1;
@@ -508,6 +535,47 @@ void main() {
           .document;
       expect(spans(after, 2), [(1, 2), (4, 1)]);
       expect(check(after), const Success<void>(null));
+    });
+  });
+
+  group('moves', () {
+    test('one whose layer-2 ranges inside it are not one run is refused', () {
+      // (2,1) and (4,1) lie inside the items moved, and (3,5) between them
+      // crosses its end and is clamped, so what moves at layer 2 is not
+      // one run of its items.
+      final document = Layered.of(
+        Text.of('abcdefghij'),
+        Interleaved(),
+      ).unwrap();
+      expect(document.apply(Edit(1, Move(span(2, 3), 10))), invalid);
+      expect(String.fromCharCodes(document.items.items), 'abcdefghij');
+      expect(
+        document.layer(2),
+        Ranges.of([tagged(2, 1), tagged(3, 5), tagged(4, 1)]),
+      );
+    });
+  });
+
+  group('moves at the top layer', () {
+    test('one leaves the top layer to derive again when it holds nothing', () {
+      // Layer 2 is the top layer, and what moves there is not one run: with
+      // no annotations, deriving it again puts it in order, as before.
+      final document = Layered.of(
+        Text.of('abcdefghij'),
+        Interleaved(depth: 2),
+      ).unwrap();
+      final moved = document.apply(Edit(1, Move(span(2, 3), 10)));
+      expect(moved, isA<Success<Change<int>>>());
+    });
+
+    test('one is refused where an annotation there would lose units', () {
+      final document = Layered.of(Text.of('abcdefghij'), Interleaved(depth: 2))
+          .unwrap()
+          .apply(Edit.annotation(2, Mark<Object?>(tagged(0, 3))))
+          .unwrap()
+          .document;
+      expect(document.apply(Edit(1, Move(span(2, 3), 10))), invalid);
+      expect(String.fromCharCodes(document.items.items), 'abcdefghij');
     });
   });
 
@@ -887,6 +955,98 @@ final class Forged implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Success(derivation);
+
+  /// As the bracket grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _brackets.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
+}
+
+/// The bracket grammar, whose every structural edit removes the first
+/// range of layer 3 and places it again over the first two items below.
+final class Placing implements Grammar<int> {
+  final Brackets _brackets = Brackets();
+
+  @override
+  int get depth => _brackets.depth;
+
+  @override
+  Derived derive(Layered<int> document, int layer, Range region) =>
+      _brackets.derive(document, layer, region);
+
+  @override
+  Range affected(Layered<int> document, int layer, Range changed) =>
+      _brackets.affected(document, layer, changed);
+
+  @override
+  Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) {
+    final (marker, range) = document.markers(3).first;
+    return Success((
+      below: const [],
+      created: [(marker, tagged(0, 2, attributes: range.attributes))],
+      removed: [marker],
+      updated: const {},
+    ));
+  }
+
+  /// As the bracket grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _brackets.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
+}
+
+/// The bracket grammar, whose every structural edit removes the first
+/// range of layer 3 and places it again twice, under the same marker.
+final class Doubling implements Grammar<int> {
+  final Brackets _brackets = Brackets();
+
+  @override
+  int get depth => _brackets.depth;
+
+  @override
+  Derived derive(Layered<int> document, int layer, Range region) =>
+      _brackets.derive(document, layer, region);
+
+  @override
+  Range affected(Layered<int> document, int layer, Range changed) =>
+      _brackets.affected(document, layer, changed);
+
+  @override
+  Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) {
+    final (marker, range) = document.markers(3).first;
+    return Success((
+      below: const [],
+      created: [(marker, range), (marker, range)],
+      removed: [marker],
+      updated: const {},
+    ));
+  }
+
+  /// As the bracket grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _brackets.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// The bracket grammar with faulty answers added at layer 2: [strays] are
@@ -951,6 +1111,18 @@ final class Faulty implements Grammar<int> {
     _check('edit');
     return _brackets.edit(document, change);
   }
+
+  /// As the bracket grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _brackets.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of depth 2 whose layer 2 has ranges sharing a start, returned
@@ -989,6 +1161,18 @@ final class Nested implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'nested: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of depth 3 over ten items or more whose layer 2 overlaps:
@@ -1015,6 +1199,18 @@ final class Spanning implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'spanning: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of depth 2 whose layer 2 is a chain of crossing ranges: one
@@ -1052,6 +1248,18 @@ final class Pairs implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'pairs: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of fixed layer-2 [ranges] over the text, a layer-3 range over
@@ -1107,6 +1315,18 @@ final class Trims implements Grammar<int> {
       updated: const {},
     ));
   }
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of three layers whose layers above the first each hold a range
@@ -1146,6 +1366,57 @@ final class Whole implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'whole: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
+}
+
+/// A grammar of [depth] 2 or 3 over ten items or more whose layer 2
+/// interleaves: (2,1) and (4,1) with (3,5) between them, which clamps where
+/// a move cuts it. Layer 3, if any, is empty.
+final class Interleaved implements Grammar<int> {
+  /// The grammar, of [depth] layers.
+  Interleaved({this.depth = 3});
+
+  @override
+  final int depth;
+
+  @override
+  Derived derive(Layered<int> document, int layer, Range region) => (
+    ranges: layer == 2 && region.length >= 10
+        ? [tagged(2, 1), tagged(3, 5), tagged(4, 1)]
+        : const [],
+    diagnostics: const [],
+  );
+
+  @override
+  Range affected(Layered<int> document, int layer, Range changed) =>
+      span(0, layer == 2 ? document.items.length : document.layer(2).length);
+
+  @override
+  Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
+      Failure(Kind.invalid, 'interleaved: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.clamp;
 }
 
 /// The bracket grammar with a [depth] that can be changed, which a grammar
@@ -1170,6 +1441,18 @@ final class Shifting implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       _brackets.edit(document, change);
+
+  /// As the bracket grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _brackets.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// The bracket grammar with a [depth] getter that throws.

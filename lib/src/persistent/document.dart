@@ -1,6 +1,7 @@
 import '../attributed/attributed.dart';
 import '../range/range.dart';
 import '../sequence/sequence.dart';
+import 'carry.dart';
 import 'command.dart';
 import 'endpoints.dart';
 import 'index.dart';
@@ -111,7 +112,16 @@ final class Document<T> with SequenceBase<T> {
   /// [previous] and appends [command] to [commands], so one step back
   /// undoes every coalesced command. A command that does not fit the
   /// document is a failure, and this document is unchanged.
-  Result<Document<T>> apply(Command<T> command, {bool flatten = false}) {
+  ///
+  /// [crossing] decides, for a [Move], each range that has one end inside
+  /// the items moved and one outside them; by default the move fails.
+  Result<Document<T>> apply(
+    Command<T> command, {
+    bool flatten = false,
+    Crossing Function(ARange range) crossing = _refused,
+  }) {
+    // A move is logged with what it decided of the ranges crossing it.
+    var logged = command;
     final Result<_Parts<T>> edited = switch (command) {
       // An endpoint exactly at the insertion point moves only with right
       // gravity, so the left tree shifts from the next position.
@@ -166,11 +176,15 @@ final class Document<T> with SequenceBase<T> {
       ),
       Unmark(:final marker) => _unmark(marker),
       Update(:final marker, :final attributes) => _update(marker, attributes),
+      Move() => _move(command, crossing).map((done) {
+        logged = done.$2;
+        return done.$1;
+      }),
     };
     return edited.map(
       (parts) => flatten
-          ? Document._(parts, version, previous, _Log(command, _log))
-          : Document._(parts, version + 1, this, _Log(command, null)),
+          ? Document._(parts, version, previous, _Log(logged, _log))
+          : Document._(parts, version + 1, this, _Log(logged, null)),
     );
   }
 
@@ -216,6 +230,9 @@ final class Document<T> with SequenceBase<T> {
   /// collapsed by a deletion holding it, then shifted by items inserted
   /// after it, or at it with right gravity.
   static int _moved(int position, Gravity gravity, Command<Object?> command) {
+    if (command is Move<Object?>) {
+      return moved(position, gravity, command);
+    }
     final (at, cut, put) = switch (command) {
       Insert(:final position, :final items) => (position, 0, items.length),
       Delete(:final span) => (span.start, span.length, 0),
@@ -224,7 +241,8 @@ final class Document<T> with SequenceBase<T> {
         span.length,
         items.length,
       ),
-      Mark() || Unmark() || Update() => (0, 0, 0),
+      // A move is carried above.
+      Mark() || Unmark() || Update() || Move() => (0, 0, 0),
     };
     final kept = position <= at
         ? position
@@ -243,7 +261,12 @@ final class Document<T> with SequenceBase<T> {
   /// this document. The first command that fails makes the whole
   /// transaction fail: its failure is returned with its kind and a message
   /// naming the command, and this document is unchanged.
-  Result<Document<T>> transact(List<Command<T>> commands) {
+  ///
+  /// [crossing] decides for every [Move] among them, as for [apply].
+  Result<Document<T>> transact(
+    List<Command<T>> commands, {
+    Crossing Function(ARange range) crossing = _refused,
+  }) {
     if (commands.isEmpty) {
       return Success(this);
     }
@@ -281,10 +304,11 @@ final class Document<T> with SequenceBase<T> {
       first = marks.length;
     }
     for (final (index, command) in commands.indexed.skip(first)) {
-      switch (current.apply(command)) {
+      switch (current.apply(command, crossing: crossing)) {
         case Success(:final value):
           current = value;
-          log = _Log(command, log);
+          // As apply logged it, so a move keeps what it decided.
+          log = _Log(value._log!.command, log);
         case Failure(:final kind, :final message):
           return Failure(kind, 'transact: command $index: $message');
       }
@@ -404,6 +428,115 @@ final class Document<T> with SequenceBase<T> {
         index: _index.put(marker, entry),
       );
     });
+  }
+
+  /// The parts with the items of [move] moved, every range carried with
+  /// them or past them, and each one crossing an edge of its span decided
+  /// by the move, or else by [crossing]; and the move with every decision
+  /// it made.
+  ///
+  /// Every endpoint is placed again in one pass, as [transact] places a
+  /// leading run of marks, so the labels come out evenly spaced.
+  Result<(_Parts<T>, Move<T>)> _move(
+    Move<T> move,
+    Crossing Function(ARange range) crossing,
+  ) {
+    final Move(:span, :to) = move;
+    if (outside(span, length) case final position?) {
+      return Failure.bounds('move', position);
+    }
+    if (to < 0 || to > length) {
+      return Failure.bounds('move', to);
+    }
+    final (start, end) = (span.start, span.end);
+    if (start < to && to < end) {
+      return Failure(Kind.invalid, 'move: $to is inside $span');
+    }
+    if (to == start || to == end) {
+      return Success((_parts, move));
+    }
+    final decided = <Marker, Crossing>{};
+    final moved = _content.items.skip(start).take(span.length).toList();
+    final marks = <Mark<T>>[];
+    for (final (marker, range) in markers) {
+      final entry = _index.get(marker)!;
+      var (first, last) = (range.start, range.end);
+      // Whether its start, and its end, go with the items.
+      var (leads, trails) = (false, false);
+      final within =
+          start <= first &&
+          last <= end &&
+          (first < last || (start < first && first < end));
+      if (within) {
+        (leads, trails) = (true, true);
+      } else if (first < end &&
+          start < last &&
+          !(first < start && end < last)) {
+        // Crossing: overlapping the items, holding only some of them. A
+        // range sharing one edge with them and running past the other
+        // holds some of them and not all.
+        final decision = move.crossings[marker] ?? crossing(range);
+        decided[marker] = decision;
+        // Whether it is its end that lies among the items, or its start.
+        final trailing = first < start;
+        switch (decision) {
+          case Crossing.refuse:
+            return Failure(Kind.invalid, 'move: $range crosses $span');
+          case Crossing.clamp:
+            if (trailing) {
+              last = start;
+            } else {
+              first = end;
+            }
+          case Crossing.follow:
+            if (trailing) {
+              trails = true;
+            } else {
+              leads = true;
+            }
+        }
+      }
+      final placed = carried(first, entry.start, span, to, inside: leads);
+      final ended = carried(last, entry.end, span, to, inside: trails);
+      // Following the items can turn a range inside out, which fails. An
+      // empty range whose start goes past items arriving where it stands,
+      // and whose end stays, is left as a deletion and an insertion leave
+      // it: empty, at its start.
+      if (ended < placed && decided[marker] == Crossing.follow) {
+        return Failure(Kind.invalid, 'move: $range would end before it starts');
+      }
+      marks.add(
+        Mark.of(
+          marker,
+          ARange.from(
+            extent(placed, ended < placed ? 0 : ended - placed),
+            entry.attributes,
+          ),
+          start: entry.start,
+          end: entry.end,
+        ),
+      );
+    }
+    final at = to < start ? to : to - span.length;
+    return _content
+        .deleteAll(span)
+        .flatMap((content) => content.insertAll(at, moved))
+        .map(
+          (content) => (
+            Document<T>._(
+              (
+                content: content,
+                right: const Endpoints.empty(),
+                left: const Endpoints.empty(),
+                index: const Index.empty(),
+              ),
+              version,
+              previous,
+              null,
+            )._markAll(marks),
+            Move<T>(span, to, Map.unmodifiable(decided)),
+          ),
+        );
   }
 
   Result<_Parts<T>> _unmark(Marker marker) {
@@ -781,3 +914,7 @@ extension DocumentMeasures on Document<int> {
   /// [count] in `1..measure.ends`.
   int ending(int count) => _content.end(count);
 }
+
+/// The default for a move: every range crossing an edge of what is moved
+/// makes it fail.
+Crossing _refused(ARange range) => Crossing.refuse;

@@ -8,3 +8,7 @@ pubspec.lock
 
 # Development material that does not belong in the package.
 .github/
+
+# Planning files for this work, kept out of the package and the repository.
+SPEC.md
+tasks/

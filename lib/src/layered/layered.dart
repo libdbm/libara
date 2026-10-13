@@ -17,6 +17,7 @@ import 'grammar.dart';
 
 export 'format.dart';
 export 'grammar.dart';
+export 'kept.dart';
 
 part 'delta.dart';
 part 'projection.dart';
@@ -25,10 +26,15 @@ part 'region.dart';
 part 'settle.dart';
 
 /// An edit to a layered document: a persistent [command] acting on the
-/// items or ranges of [layer].
+/// items or ranges of [layer], or on its annotations.
 final class Edit<T> {
   /// [command] at [layer].
-  const Edit(this.layer, this.command);
+  const Edit(this.layer, this.command) : annotation = false;
+
+  /// [command], a `Mark`, `Update` or `Unmark`, acting on an annotation
+  /// over the items of [layer]: a range the caller owns, which the grammar
+  /// neither derives nor sees.
+  const Edit.annotation(this.layer, this.command) : annotation = true;
 
   /// The layer whose items or ranges [command] acts on, from 1.
   final int layer;
@@ -36,8 +42,14 @@ final class Edit<T> {
   /// What the edit does.
   final Command<Object?> command;
 
+  /// Whether [command] acts on an annotation over [layer]'s items rather
+  /// than on the layer itself.
+  final bool annotation;
+
   @override
-  String toString() => 'Edit($layer, $command)';
+  String toString() => annotation
+      ? 'Edit.annotation($layer, $command)'
+      : 'Edit($layer, $command)';
 }
 
 /// What one layer gained and lost in an edit.
@@ -54,9 +66,14 @@ typedef Delta = ({
   List<Range> regions,
 });
 
-/// The result of an edit: the new version and, for each layer from 1, what
-/// changed in it.
-typedef Change<T> = ({Layered<T> document, List<Delta> layers});
+/// The result of an edit: the new version; for each layer from 1, what
+/// changed in it; and for each layer from 1, the annotations over its items
+/// created, removed and updated, with no regions.
+typedef Change<T> = ({
+  Layered<T> document,
+  List<Delta> layers,
+  List<Delta> annotations,
+});
 
 /// A document of layers 1 to n over one sequence.
 ///
@@ -73,6 +90,7 @@ final class Layered<T> {
     this._base,
     this._upper,
     this._flagged,
+    this._annotations,
     this.version,
     this.previous,
     this.changes,
@@ -110,6 +128,7 @@ final class Layered<T> {
       Document.of(items),
       const [],
       const [],
+      List.unmodifiable(List.filled(depth, const <Marker>{})),
       0,
       null,
       const [],
@@ -139,6 +158,11 @@ final class Layered<T> {
   /// diagnostics rather than ranges.
   final List<Set<Marker>> _flagged;
 
+  /// For each layer from 1, the markers on its document that are
+  /// annotations: ranges over its items the caller owns, which are neither
+  /// ranges of the layer above nor diagnostics.
+  final List<Set<Marker>> _annotations;
+
   /// 0 for a derived document, one more for each edit.
   final int version;
 
@@ -163,6 +187,7 @@ final class Layered<T> {
     _base.compact(),
     List.unmodifiable([for (final document in _upper) document.compact()]),
     _flagged,
+    _annotations,
     0,
     null,
     const [],
@@ -258,6 +283,91 @@ final class Layered<T> {
     ]);
   }
 
+  /// The annotations over layer [layer]'s items, each with its marker, in
+  /// start order: ranges the caller owns, added by [Edit.annotation], which
+  /// no other query returns and the grammar never sees. Empty outside
+  /// `1..depth`.
+  List<(Marker, ARange)> annotations(int layer) {
+    if (layer < 1 || layer > _built) {
+      return const [];
+    }
+    final noted = _annotations[layer - 1];
+    return List.unmodifiable([
+      for (final pair in _document(layer).markers)
+        if (noted.contains(pair.$1)) pair,
+    ]);
+  }
+
+  /// The gravities of the annotation under [marker] over layer [layer]'s
+  /// items, as [Document.gravity] gives a range's, or `null` when [marker]
+  /// is not one.
+  ({Gravity start, Gravity end})? gravity(int layer, Marker marker) =>
+      layer < 1 || layer > _built || !_annotations[layer - 1].contains(marker)
+      ? null
+      : _document(layer).gravity(marker);
+
+  /// This document after [edit], an annotation edit: its `Mark`, `Update`
+  /// or `Unmark` applied to its layer's document alone, every layer left as
+  /// it is, and nothing derived.
+  Result<Change<T>> _annotate(Edit<T> edit) {
+    final Edit(:layer, :command) = edit;
+    final noted = _annotations[layer - 1];
+    final Set<Marker> next;
+    switch (command) {
+      case Mark(:final marker):
+        next = {...noted, marker};
+      case Unmark(:final marker) when noted.contains(marker):
+        next = {...noted}..remove(marker);
+      case Update(:final marker) when noted.contains(marker):
+        next = noted;
+      default:
+        return Failure(
+          Kind.invalid,
+          'layered: $command at layer $layer is not an annotation edit',
+        );
+    }
+    final Result<Document<Object?>> applied = layer == 1
+        ? _base.apply(_retyped<T>(command))
+        : _upper[layer - 2].apply(_retyped<Marker>(command));
+    return applied.map((document) {
+      final upper = [..._upper];
+      if (layer > 1) {
+        upper[layer - 2] = document as Document<Marker>;
+      }
+      final annotations = [..._annotations];
+      annotations[layer - 1] = Set.unmodifiable(next);
+      return (
+        document: Layered<T>._(
+          grammar,
+          depth,
+          layer == 1 ? document as Document<T> : _base,
+          List.unmodifiable(upper),
+          _flagged,
+          List.unmodifiable(annotations),
+          version + 1,
+          this,
+          List.unmodifiable([edit]),
+        ),
+        layers: _quiet,
+        annotations: List.unmodifiable([
+          for (var at = 1; at <= depth; at++)
+            at != layer
+                ? _none
+                : _frozen((
+                    created: [if (command is Mark) command.marker],
+                    removed: [if (command is Unmark) command.marker],
+                    updated: [if (command is Update) command.marker],
+                    regions: const [],
+                  )),
+        ]),
+      );
+    });
+  }
+
+  /// A delta with nothing in it for every layer.
+  List<Delta> get _quiet =>
+      List.unmodifiable([for (var layer = 1; layer <= depth; layer++) _none]);
+
   /// What [query] finds among the marks on the layer below [layer] that
   /// are layer-[layer] ranges, not diagnostics.
   List<(Marker, ARange)> _ranges(
@@ -268,9 +378,10 @@ final class Layered<T> {
       return const [];
     }
     final flagged = _flagged[layer - 2];
+    final noted = _annotations[layer - 2];
     return List.unmodifiable([
       for (final pair in query(_document(layer - 1)))
-        if (!flagged.contains(pair.$1)) pair,
+        if (!flagged.contains(pair.$1) && !noted.contains(pair.$1)) pair,
     ]);
   }
 
@@ -289,6 +400,9 @@ final class Layered<T> {
     final Edit(:layer, :command) = edit;
     if (layer < 1 || layer > depth) {
       return Failure(Kind.invalid, 'layered: layer $layer is not in 1..$depth');
+    }
+    if (edit.annotation) {
+      return _annotate(edit);
     }
     if (layer == 1) {
       return switch (_retype(command)) {
@@ -312,6 +426,7 @@ final class Layered<T> {
       _base,
       _upper,
       _flagged,
+      _annotations,
       version + 1,
       this,
       List.unmodifiable([edit]),
@@ -369,6 +484,7 @@ final class Layered<T> {
         base,
         List.unmodifiable(upper),
         _flagged,
+        _annotations,
         version,
         previous,
         changes,
@@ -392,7 +508,11 @@ final class Layered<T> {
           all.add(_frozen(delta));
       }
     }
-    return Success((document: current, layers: List.unmodifiable(all)));
+    return Success((
+      document: current,
+      layers: List.unmodifiable(all),
+      annotations: _quiet,
+    ));
   }
 
   /// This document with every one of [edits] applied in order, each to the
@@ -408,12 +528,7 @@ final class Layered<T> {
   /// this document is unchanged.
   Result<Change<T>> transact(List<Edit<T>> edits) {
     if (edits.isEmpty) {
-      return Success((
-        document: this,
-        layers: List.unmodifiable([
-          for (var layer = 1; layer <= depth; layer++) _none,
-        ]),
-      ));
+      return Success((document: this, layers: _quiet, annotations: _quiet));
     }
     var current = this;
     final steps = <Change<T>>[];
@@ -434,6 +549,7 @@ final class Layered<T> {
         last._base,
         last._upper,
         last._flagged,
+        last._annotations,
         version + 1,
         this,
         List.unmodifiable(edits),
@@ -442,8 +558,28 @@ final class Layered<T> {
         for (var layer = 1; layer <= depth; layer++)
           _settled(_merged(_carried(this, steps, layer)), layer, this, last),
       ]),
+      annotations: List.unmodifiable([
+        for (var layer = 1; layer <= depth; layer++)
+          _merged([for (final step in steps) step.annotations[layer - 1]]),
+      ]),
     ));
   }
+
+  /// [command], where it is a move, with every annotation over layer
+  /// [layer]'s items that it does not decide clamped: an annotation a move
+  /// cuts keeps the part outside it, and the grammar is never asked about
+  /// one, since a move decides from its own `crossings` first.
+  Command<S> _clamped<S>(Command<S> command, int layer) => switch (command) {
+    Move(:final span, :final to, :final crossings) => Move<S>(span, to, {
+      for (final marker in _annotations[layer - 1]) marker: Crossing.clamp,
+      ...crossings,
+    }),
+    _ => command,
+  };
+
+  /// What the grammar does with a token crossing an edge of a move, the
+  /// tokens being the ranges marked on layer 1.
+  Crossing _crossing(ARange range) => grammar.crossing(this, 2, range);
 
   /// [command] as an edit to layer 1's items of [T], or `null` when it is
   /// not an item edit or holds an item that is not a [T].
@@ -465,34 +601,102 @@ final class Layered<T> {
         final items? => Replace(span, items),
         null => null,
       },
+      Move(:final span, :final to, :final crossings) => Move<T>(
+        span,
+        to,
+        crossings,
+      ),
       _ => null,
     };
   }
 
   /// This document after [command] edits layer 1, with each layer above
   /// derived again over the region the edit affects.
-  Result<Change<T>> _text(Edit<T> edit, Command<T> command) => switch (_base
-      .apply(command)) {
-    Failure(:final kind, :final message) => Failure(kind, 'layered: $message'),
-    Success(value: final base) =>
-      Layered<T>._(
-        grammar,
-        depth,
-        base,
-        _upper,
-        _flagged,
-        version + 1,
-        this,
-        List.unmodifiable([edit]),
-      )._above(1, _span(command), [
-        (
-          created: const [],
-          removed: const [],
-          updated: const [],
-          regions: [_span(command)],
-        ),
-      ]),
-  };
+  ///
+  /// A move moves the items of each layer above that lie wholly inside the
+  /// items it moves, so the ranges over them go along under their markers.
+  Result<Change<T>> _text(Edit<T> edit, Command<T> command) {
+    final Document<T> base;
+    switch (_base.apply(_clamped(command, 1), crossing: _crossing)) {
+      case Failure(:final kind, :final message):
+        return Failure(kind, 'layered: $message');
+      case Success(:final value):
+        base = value;
+    }
+    final List<Document<Marker>> upper;
+    switch (command is Move<T> ? _lifted(command) : Success(_upper)) {
+      case Failure(:final kind, :final message):
+        return Failure(kind, 'layered: $message');
+      case Success(:final value):
+        upper = value;
+    }
+    return Layered<T>._(
+      grammar,
+      depth,
+      base,
+      List.unmodifiable(upper),
+      _flagged,
+      _annotations,
+      version + 1,
+      this,
+      List.unmodifiable([edit]),
+    )._above(1, _span(command), [
+      (
+        created: const [],
+        removed: const [],
+        updated: const [],
+        regions: [_span(command)],
+      ),
+    ]);
+  }
+
+  /// The layers above 1 once [move] has moved layer 1's items: in each that
+  /// has ranges over it, the run of items whose ranges lie wholly inside
+  /// what moved below goes to where those ranges went, the ranges over them
+  /// moving along, and the grammar deciding those crossing an edge of the
+  /// run. The top layer is lifted too when it holds annotations, so they go
+  /// with its items; one that holds nothing is left for deriving it again
+  /// to put in order. A layer whose items that move are not one run refuses
+  /// the move.
+  Result<List<Document<Marker>>> _lifted(Move<T> move) {
+    final upper = [..._upper];
+    var (start, end, to) = (move.span.start, move.span.end, move.to);
+    final last = _annotations[_built - 1].isEmpty ? _built - 1 : _built;
+    for (var layer = 2; layer <= last; layer++) {
+      final ranges = markers(layer);
+      final inside = [
+        for (final (index, (_, range)) in ranges.indexed)
+          if (start <= range.start &&
+              range.end <= end &&
+              (range.start < range.end ||
+                  (start < range.start && range.start < end)))
+            index,
+      ];
+      if (inside.isEmpty) {
+        break;
+      }
+      final first = inside.first;
+      if (inside.last - first + 1 != inside.length) {
+        return Failure(
+          Kind.invalid,
+          'move: the layer-$layer ranges it moves are not one run',
+        );
+      }
+      final place = ranges.where((pair) => pair.$2.start < to).length;
+      final run = positions.extent(first, inside.length);
+      switch (upper[layer - 2].apply(
+        _clamped(Move<Marker>(run, place), layer),
+        crossing: (range) => grammar.crossing(this, layer + 1, range),
+      )) {
+        case Failure(:final kind, :final message):
+          return Failure(kind, message);
+        case Success(:final value):
+          upper[layer - 2] = value;
+      }
+      (start, end, to) = (run.start, run.end, place);
+    }
+    return Success(upper);
+  }
 
   /// This document with layer [layer] derived over the whole of the layer
   /// below, which must be the top layer built so far.
@@ -532,6 +736,7 @@ final class Layered<T> {
         layer == 2 ? placed as Document<T> : _base,
         List.unmodifiable([...upper, Document.of(Items.of(ranges))]),
         List.unmodifiable([..._flagged, Set<Marker>.unmodifiable(flagged)]),
+        _annotations,
         version,
         previous,
         changes,
@@ -623,6 +828,20 @@ Range _hull(Range a, Range b) {
 /// it: items inserted at either end fall outside it.
 Mark<S> _mark<S>(ARange range) => Mark<S>(range, end: Gravity.left);
 
+/// [command], a `Mark`, `Update` or `Unmark`, as a command on a document of
+/// [S].
+Command<S> _retyped<S>(Command<Object?> command) => switch (command) {
+  Mark(:final marker, :final range, :final start, :final end) => Mark<S>.of(
+    marker,
+    range,
+    start: start,
+    end: end,
+  ),
+  Update(:final marker, :final attributes) => Update<S>(marker, attributes),
+  Unmark(:final marker) => Unmark<S>(marker),
+  _ => throw StateError('$command is not a Mark, Update or Unmark'),
+};
+
 /// What [call] into the grammar returns, or a [Kind.invalid] failure
 /// naming [what] the grammar was asked when it throws. The grammar is
 /// the caller's code, so this is where its exceptions become failures.
@@ -672,15 +891,39 @@ Result<void> check<T>(Layered<T> document) {
         case final Failure<void> failure) {
       return failure;
     }
+    final marks = document._document(layer);
+    for (final marker in document._annotations[layer - 1]) {
+      if (marks.resolve(marker) == null) {
+        return Failure(
+          Kind.invalid,
+          'layered: layer $layer annotation $marker is not marked there',
+        );
+      }
+    }
+  }
+  final top = document._built;
+  if (document._document(top).markers.length !=
+      document._annotations[top - 1].length) {
+    return Failure(
+      Kind.invalid,
+      'layered: layer $top holds marks that are not annotations',
+    );
   }
   for (var layer = 2; layer <= document._built; layer++) {
     final below = document._document(layer - 1);
     final items = document._upper[layer - 2].items.toList();
     final flagged = document._flagged[layer - 2];
+    final noted = document._annotations[layer - 2];
+    if (flagged.any(noted.contains)) {
+      return Failure(
+        Kind.invalid,
+        'layered: layer ${layer - 1} has a diagnostic that is an annotation',
+      );
+    }
     Range? previous;
     for (final (index, marker) in items.indexed) {
       final range = below.resolve(marker);
-      if (range == null || flagged.contains(marker)) {
+      if (range == null || flagged.contains(marker) || noted.contains(marker)) {
         return Failure(
           Kind.invalid,
           'layered: layer $layer item $index is not a range of layer $layer',
@@ -694,11 +937,11 @@ Result<void> check<T>(Layered<T> document) {
       }
       previous = range;
     }
-    if (below.markers.length != items.length + flagged.length) {
+    if (below.markers.length != items.length + flagged.length + noted.length) {
       return Failure(
         Kind.invalid,
         'layered: layer ${layer - 1} holds marks that are neither layer '
-        '$layer items nor diagnostics',
+        '$layer items, diagnostics, nor annotations',
       );
     }
   }

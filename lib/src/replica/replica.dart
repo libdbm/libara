@@ -154,6 +154,11 @@ final class Replica<T> {
           }
         case Insert() || Delete() || Replace():
           break;
+        case Move():
+          return Failure(
+            Kind.invalid,
+            'replica: command $index: a move is not replicated',
+          );
       }
     }
     return document.transact(commands).map((next) {
@@ -404,6 +409,11 @@ final class Replica<T> {
           if (command is Unmark<T>) {
             gone.add(key);
           }
+        case Move():
+          return Failure(
+            Kind.invalid,
+            'command $index: a move is not replicated',
+          );
         case Insert() || Delete() || Replace():
           if (sequential) {
             local.add(command);
@@ -576,7 +586,7 @@ Marker? _named(Command<Object?> command) => switch (command) {
   Mark(:final marker) ||
   Unmark(:final marker) ||
   Update(:final marker) => marker,
-  Insert() || Delete() || Replace() => null,
+  Insert() || Delete() || Replace() || Move() => null,
 };
 
 bool _equal(List<Stamp> a, List<Stamp> b) {

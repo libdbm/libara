@@ -40,6 +40,48 @@ final class Delete<T> extends Command<T> {
   String toString() => 'Delete($span)';
 }
 
+/// Moves the items in [span] to before [to], a position outside [span]
+/// counted before the move, keeping them and the ranges wholly inside them.
+///
+/// A range wholly inside [span] goes with the items, under its marker. A
+/// range outside it moves as a [Delete] of [span] then an [Insert] at [to]
+/// would move it, with its gravity deciding an end exactly at [to]. A range
+/// crossing an edge of [span] is decided by [crossings], under its marker,
+/// or else by the [Crossing] that applying the move is given. A document
+/// logs the move with every decision it made in [crossings], so the move
+/// replays as it was made.
+final class Move<T> extends Command<T> {
+  /// Moves the items in [span] to before [to], with [crossings] decided.
+  const Move(this.span, this.to, [this.crossings = const {}]);
+
+  /// The items to move.
+  final Range span;
+
+  /// Where they go, before the move.
+  final int to;
+
+  /// What becomes of each range crossing an edge of [span], by marker.
+  final Map<Marker, Crossing> crossings;
+
+  @override
+  String toString() => 'Move($span, $to, $crossings)';
+}
+
+/// What a move does with a range that has one end inside the items it moves
+/// and one outside them.
+enum Crossing {
+  /// The end inside is cut back to the edge of the items, so the range
+  /// keeps the part outside them.
+  clamp,
+
+  /// The end inside goes with the items; a failure where the range would
+  /// then end before it starts.
+  follow,
+
+  /// The move fails.
+  refuse,
+}
+
 /// What happens to a range endpoint that sits exactly where items are
 /// inserted.
 enum Gravity {

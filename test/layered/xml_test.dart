@@ -389,7 +389,8 @@ void main() {
                 Replace(
                   span(start, at(min(2, length - start))),
                   Text.of(
-                    const ['x', '<', '>', '<a>', '</a>'][random.nextInt(5)],
+                    const ['x', '<', '>', '<a>', '</a>', '&', 'amp;'][random
+                        .nextInt(7)],
                   ),
                 ),
               );
@@ -477,6 +478,240 @@ void main() {
       frozen(xml('<a/>').transact([]).unwrap());
     });
   });
+
+  group('moves', () {
+    /// The marker of the element called [name] in [document].
+    Marker element(Layered<int> document, String name) => document
+        .markers(3)
+        .firstWhere((pair) => pair.$2.get('name') == string(name))
+        .$1;
+
+    /// [document]'s text.
+    String shown(Layered<int> document) =>
+        String.fromCharCodes(document.items.items);
+
+    test(
+      'a layer-1 move takes an element before its sibling, marker and all',
+      () {
+        const source = '<r><a>x</a><b>y</b></r>';
+        final document = xml(source);
+        final b = element(document, 'b');
+        final start = source.indexOf('<b>');
+        final moved = document
+            .apply(
+              Edit(
+                1,
+                Move(span(start, '<b>y</b>'.length), source.indexOf('<a>')),
+              ),
+            )
+            .unwrap()
+            .document;
+        expect(shown(moved), '<r><b>y</b><a>x</a></r>');
+        expect(element(moved, 'b'), b);
+        expect(moved.diagnostics(3).items, isEmpty);
+        expect(
+          Layered.of(
+            Text.of(shown(moved)),
+            const XML(),
+          ).unwrap().layer(3).items,
+          moved.layer(3).items,
+          reason: 'what a fresh read finds',
+        );
+      },
+    );
+
+    test('one cutting an element in two is refused, as the grammar says', () {
+      const source = '<r><a>x</a><b>y</b></r>';
+      // The start tag of a and its word, without its end tag.
+      final moved = xml(source).apply(Edit(1, Move(span(3, 4), 19)));
+      expect(moved, isA<Failure<Change<int>>>());
+    });
+
+    test('one cutting a run of words reads the words again either side', () {
+      const source = '<r>abc<b/>de</r>';
+      // 'c<b/>d' to the end, cutting 'abc' and 'de'.
+      final moved = xml(source)
+          .apply(Edit(1, Move(span(5, 6), 12)))
+          .unwrap()
+          .document;
+      expect(
+        shown(moved),
+        '<r>abe</r>c<b/>d'.replaceAll('</r>c<b/>d', 'c<b/>d</r>'),
+      );
+      expect(
+        Layered.of(Text.of(shown(moved)), const XML()).unwrap().layer(2).items,
+        moved.layer(2).items,
+        reason: 'what a fresh read finds',
+      );
+    });
+
+    test('in a transaction leaves an earlier region whole, not inverted', () {
+      // 'bcd' is written as 'BCD', then 'De' moves to before 'a': the
+      // replaced region keeps 'BC' rather than ending before it starts, and
+      // the move's own region takes in 'D' where it went.
+      final change = xml('<r>abcdef</r>').transact([
+        Edit(1, Replace(span(4, 3), Text.of('BCD'))),
+        Edit(1, Move(span(6, 2), 3)),
+      ]).unwrap();
+      expect(shown(change.document), '<r>DeaBCf</r>');
+      expect(change.layers.first.regions, [span(6, 2), span(3, 5)]);
+    });
+
+    test('and back again by undoing it', () {
+      const source = '<r><a>x</a><b>y</b></r>';
+      final document = xml(source);
+      final moved = document
+          .apply(Edit(1, Move(span(11, 8), 3)))
+          .unwrap()
+          .document;
+      expect(identical(moved.previous, document), isTrue);
+      expect(shown(moved.previous!), source);
+    });
+  });
+
+  group('bare &', () {
+    /// An empty b tag at [at], zero-length.
+    ARange tag(int at) => tagged(
+      at,
+      0,
+      attributes: {'type': string('empty'), 'name': string('b')},
+    );
+
+    test('is a diagnostic over the & alone, and a reference is not', () {
+      const source = '<a>AT&T &amp; &#38; &#x26;</a>';
+      final document = xml(source);
+      final flaw = document.diagnostics(2).items.cast<ARange>().single;
+      expect((flaw.start, flaw.length), (source.indexOf('&'), 1));
+      expect(flaw.has('message'), isTrue);
+      expect(document.layer(2).items.length, 3, reason: 'the tokens');
+      same(document);
+    });
+
+    test('comes and goes as text is typed, as a fresh read finds', () {
+      var document = xml('<a>x</a>');
+      for (final (at, typed) in [(4, '&'), (5, 'amp'), (8, ';'), (5, ' ')]) {
+        document = document
+            .apply(Edit(1, Insert(at, Text.of(typed))))
+            .unwrap()
+            .document;
+        same(document, 'after $typed at $at');
+      }
+      expect(String.fromCharCodes(document.items.items), '<a>x& amp;</a>');
+      expect(document.diagnostics(2).items, hasLength(1));
+    });
+
+    test('is not made or unmade by a structural edit', () {
+      // A tag splitting a reference would leave its & bare.
+      expect(
+        xml('<r>x&amp;y</r>').apply(Edit(2, Mark<Object?>(tag(6)))),
+        invalid,
+      );
+      // Removing the tag between them would make the & a reference.
+      expect(
+        xml('<r>x&<b/>amp;</r>').apply(Edit(2, Delete<Object?>(span(2, 1)))),
+        invalid,
+      );
+      // Removing the text would take its diagnostic with it.
+      expect(
+        xml('<r>a&b<c/></r>').apply(Edit(2, Delete<Object?>(span(1, 1)))),
+        invalid,
+      );
+    });
+  });
+
+  group('text edits', () {
+    /// What the grammar makes of [change] to [source].
+    Result<Change<int>> valid(String source, Command<int> change) {
+      final document = xml(source);
+      return document.grammar.valid(document, Edit(1, change));
+    }
+
+    test('words typed and deleted between the tags are valid', () {
+      final typed = valid('<a>hi</a>', Insert(4, Text.of('o')));
+      expect(
+        String.fromCharCodes(typed.unwrap().document.items.items),
+        '<a>hoi</a>',
+      );
+      expect(valid('<a>hi</a>', Delete(span(3, 2))), isA<Success>());
+      expect(
+        valid('<a>hi</a>', Replace(span(3, 2), Text.of('yo'))),
+        isA<Success>(),
+      );
+    });
+
+    test('an edit reaching into a tag is not', () {
+      expect(valid('<a>hi</a>', Insert(1, Text.of('b'))), isA<Failure>());
+      expect(valid('<a>hi</a>', Delete(span(2, 2))), isA<Failure>());
+    });
+
+    test('nor is one writing a tag or taking one away', () {
+      expect(valid('<a>hi</a>', Insert(4, Text.of('<b/>'))), isA<Failure>());
+      expect(valid('<a><b/>hi</a>', Delete(span(3, 6))), isA<Failure>());
+    });
+
+    test('nor is one turning a tag into another as many tags', () {
+      // The element becomes an unterminated comment: one token for one.
+      expect(valid('<a/>', Insert(0, Text.of('<!--'))), isA<Failure>());
+      // The comment takes in more, of the same type, with no diagnostic.
+      expect(
+        valid('<a><!--c-->d</a>', Insert(3, Text.of('<!--'))),
+        isA<Failure>(),
+      );
+      // The end tag becomes part of a comment, and the element is left
+      // open.
+      expect(valid('<a>hi</a>', Insert(4, Text.of('<!--'))), isA<Failure>());
+    });
+
+    test(
+      'one beside a diagnostic crossing elements keeps it, and is valid',
+      () {
+        // The comment opened inside a is never closed, so its diagnostic
+        // runs from inside a to past b.
+        const source = '<r><a>x<!--y</a><b>z</b></r>';
+        final document = xml(source);
+        final flaw = document.diagnostics(2).items.cast<ARange>().single;
+        expect(flaw.start, source.indexOf('<!--'));
+        expect(flaw.end, greaterThan(source.indexOf('</b>')));
+        final typed = valid(source, Insert(6, Text.of('w'))).unwrap().document;
+        expect(
+          typed.diagnostics(2).items.cast<ARange>().single.get('message'),
+          flaw.get('message'),
+        );
+      },
+    );
+
+    test('nor is one writing a bare &, though its reference is valid', () {
+      expect(valid('<a>hi</a>', Insert(4, Text.of('AT&T'))), isA<Failure>());
+      final escaped = const XML().escaped('AT&T'.runes.toList());
+      expect(String.fromCharCodes(escaped), 'AT&amp;T');
+      expect(valid('<a>hi</a>', Insert(4, Items.of(escaped))), isA<Success>());
+    });
+
+    test('nor is one that takes a diagnostic away', () {
+      // ';' makes '&x' a reference, so its diagnostic goes: what is in
+      // error has changed, though nothing is added.
+      expect(valid('<a>&x y</a>', Insert(5, Text.of(';'))), isA<Failure>());
+    });
+
+    test('nor is a structural edit', () {
+      final document = xml('<a>hi</a>');
+      expect(
+        document.grammar.valid(document, Edit(2, Delete(span(0, 1)))),
+        isA<Failure>(),
+      );
+    });
+
+    test('escaped text is read as text alone, and raw text as markup', () {
+      const grammar = XML();
+      final escaped = String.fromCharCodes(
+        grammar.escaped('a<b>&c'.runes.toList()),
+      );
+      expect(escaped, 'a&lt;b>&amp;c');
+      expect(valid('<a>hi</a>', Insert(4, Text.of(escaped))), isA<Success>());
+      final raw = grammar.escaped('<b/>'.runes.toList(), raw: true);
+      expect(String.fromCharCodes(raw), '<b/>');
+    });
+  });
 }
 
 /// Expects [document] to keep its invariants and to have the layers of one
@@ -520,4 +755,16 @@ final class Counted implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       _xml.edit(document, change);
+
+  /// As the XML grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _xml.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }

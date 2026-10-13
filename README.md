@@ -166,8 +166,30 @@ bob: Oh, hello world
   which refuses them or describes the edits one layer down that carry them
   out, so a structural edit never lexes text. `apply` and `transact` return
   a `Change`: the new version and, per layer, the ranges created, removed,
-  and updated. `LayeredFormat` reads and writes a layered document as its
-  layer-1 sequence, so with `text` it travels as its markup.
+  and updated. A grammar's `valid` says whether a text edit leaves the
+  markup and its diagnostics as they stand, through the library's `kept`,
+  so an editor changing only the words can ask first; `escaped` writes text
+  so the grammar reads it as text. A `Move` at layer 1 carries the ranges
+  wholly inside the moved items, at every layer, under their markers; the
+  grammar's `crossing` decides a range cut by the move. `LayeredFormat`
+  reads and writes a layered document as its layer-1 sequence, so with
+  `text` it travels as its markup.
+- **Annotations.** `Edit.annotation(layer, command)` marks, updates, or
+  unmarks a range of the caller's own over a layer's items: a comment or a
+  highlight over the text, or a note over tokens or elements. It may start
+  inside one element and end inside another. No query a grammar makes
+  returns one, so it works with any grammar, and no grammar derives,
+  removes, or decides anything about it. An annotation moves with its
+  layer's items by its endpoint gravities, as a marked range does; one
+  meant to hold exactly some units ends with left gravity, so units placed
+  at its end stay outside it. A move that cuts one clamps it, unless the
+  move's own `crossings` say otherwise. `annotations(layer)` reads them, a
+  `Change` reports those created, removed, and updated, and `previous`,
+  `transact`, and `compact` keep them, and `gravity(layer, marker)` gives
+  an annotation's gravities. `LayeredFormat` saves only the markup;
+  `AnnotationsFormat` saves the annotations beside it as JSON, and its
+  `restore` marks them again on the document decoded from that markup,
+  giving one fresh marker per saved id.
 - **Selectors.** `Selector.parse` reads a CSS-like selector, and `select`
   and `matches` apply it to a document's ranges, one layer of a layered
   document, or any list of keyed ranges. Containment plays the part of the
@@ -257,6 +279,21 @@ algorithms](doc/algorithms.md), and [the music example](doc/example.md).
   must take in every range that starts or ends where the changed items do.
   The layered document itself widens the region over diagnostics that
   touch it and ranges that cross its ends.
+- **A region may start inside what a grammar builds.** The layered
+  document widens the region a grammar is asked to derive over the
+  diagnostics that touch it, so a region need not start where a unit of the
+  grammar starts. A grammar that pairs or nests reads what stands open at
+  the region's start from the layer as it is, rather than assuming nothing
+  does.
+- **A structural edit cannot move a diagnostic.** A `Derivation` creates,
+  removes and updates ranges of the edited layer, but not diagnostics, so a
+  grammar refuses a structural edit that would change what is in error
+  there. A text edit at layer 1, which derives the layers above again,
+  repairs it.
+- **Ties come in the tree's order.** Queries return ranges in start order,
+  and ranges that share a start come in an order the shape of the internal
+  trees decides. The same ranges may tie differently in another version, so
+  a caller orders ties itself where it needs an order.
 - **Grammars must be pure.** A layered document reads its grammar's
   `depth` once, but calls its other methods again whenever a version is
   edited, however old. A grammar whose answers depend on anything but its

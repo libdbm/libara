@@ -208,6 +208,7 @@ extension _Reconciling<T> on Layered<T> {
       layer == 2 ? placed as Document<T> : _base,
       List.unmodifiable(upper),
       List.unmodifiable(flagged),
+      _annotations,
       version,
       previous,
       changes,

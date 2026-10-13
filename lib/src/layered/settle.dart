@@ -147,7 +147,7 @@ extension _Settling<T> on Layered<T> {
         'grammar: $edit: $below does not edit the items of layer 1',
       );
     }
-    return switch (_base.apply(typed)) {
+    return switch (_base.apply(_clamped(typed, 1), crossing: _crossing)) {
       Failure(:final kind, :final message) => Failure(
         kind,
         'grammar: $edit: $message',
@@ -230,7 +230,10 @@ extension _Settling<T> on Layered<T> {
 
   /// Nothing, or a [Kind.invalid] failure when [derivation] removes or
   /// updates a marker that is not a range of [layer], updates one it
-  /// removes, or creates one already in use or outside the layer below.
+  /// removes, or creates one already in use or outside the layer below. A
+  /// marker it removes is not in use, so it may place that range again,
+  /// which is how a range keeps its marker across an edit that respells
+  /// its edges.
   Result<void> _checked(int layer, Derivation<T> derivation) {
     final (below: _, :created, :removed, :updated) = derivation;
     final lower = _document(layer - 1);
@@ -256,7 +259,8 @@ extension _Settling<T> on Layered<T> {
     }
     final fresh = <Marker>{};
     for (final (marker, range) in created) {
-      if (lower.resolve(marker) != null || !fresh.add(marker)) {
+      if ((lower.resolve(marker) != null && !gone.contains(marker)) ||
+          !fresh.add(marker)) {
         return Failure(Kind.invalid, 'creates $marker, which is in use');
       }
       if (outside(range, lower.length) != null) {

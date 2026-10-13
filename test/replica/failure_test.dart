@@ -31,6 +31,15 @@ void main() {
   });
 
   group('commit', () {
+    test('a move is not replicated', () {
+      final a = replica('a').commit([Insert(0, Text.of('abc'))]).unwrap().$1;
+      fails(
+        a.commit([Move(span(0, 1), 3)]),
+        Kind.invalid,
+        'a move is not replicated',
+      );
+    });
+
     test('an empty list is invalid', () {
       fails(replica('a').commit(const []), Kind.invalid, 'nothing to commit');
     });

@@ -1,5 +1,6 @@
 import 'package:libara/src/attributed/attributed.dart';
 import 'package:libara/src/layered/layered.dart';
+import 'package:libara/src/persistent/command.dart' show Crossing;
 import 'package:libara/src/range/range.dart';
 import 'package:libara/src/sequence/sequence.dart';
 
@@ -119,4 +120,16 @@ final class Overlaps implements Grammar<int> {
     }
     return span(first, last - first);
   }
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }

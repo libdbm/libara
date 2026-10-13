@@ -212,6 +212,151 @@ Result<Map<String, Object?>> _save<T>(
   return Success(json);
 }
 
+/// A layered document's annotations as a JSON value, to keep beside the
+/// markup [LayeredFormat] gives, which holds no annotations, since no
+/// grammar derives or sees them.
+///
+/// [encode] gives `{"annotations": [...]}`, one entry per annotation, layer
+/// by layer and each layer's in start order, each with its `layer`, an
+/// `id` counting from 0 in that order, and its `range`, gravities and
+/// attributes as [JSONFormat] writes a range's. An annotation over a layer
+/// above 1 is saved as the range over that layer's items it is held as:
+/// the same markup derives the same units, so the indices find them again.
+/// [restore] marks them on a document decoded from the markup. It is not a
+/// [Format], since loading needs that document as well as the saved form.
+final class AnnotationsFormat {
+  /// The format, keeping to [limits].
+  const AnnotationsFormat({this.limits = const Limits()});
+
+  /// The bounds [encode] and [restore] keep to.
+  final Limits limits;
+
+  /// [document]'s annotations as a JSON value, or the failure, with its
+  /// path, for more annotations than `limits.markers`, attributes past
+  /// [limits], or text that would not read back.
+  Result<Object?> encode<T>(Layered<T> document) {
+    var count = 0;
+    for (var layer = 1; layer <= document.depth; layer++) {
+      count += document.annotations(layer).length;
+    }
+    if (_over(limits.markers, count)) {
+      return _exceeds('annotations', 'markers', count, limits.markers);
+    }
+    final entries = <Object?>[];
+    for (var layer = 1; layer <= document.depth; layer++) {
+      for (final (marker, range) in document.annotations(layer)) {
+        final at = 'annotations[${entries.length}]';
+        switch (_range(range, document.gravity(layer, marker)!, limits)) {
+          case Failure(:final kind, :final message):
+            return Failure(kind, '$at.$message');
+          case Success(:final value):
+            entries.add({'layer': layer, 'id': entries.length, ...value});
+        }
+      }
+    }
+    return Success({'annotations': entries});
+  }
+
+  /// Version 0 of [document], a layered document decoded from the markup
+  /// the annotations were saved beside, with every annotation [form] holds
+  /// marked, and one fresh [Marker] per saved id, in id order. A form of the
+  /// wrong shape, an unknown gravity, a repeated id, a layer outside
+  /// `1..depth`, or a range outside its layer's items is a [Kind.syntax]
+  /// failure naming the entry, and more entries than `limits.markers` a
+  /// [Kind.invalid] one, found before any entry is read; nothing is marked.
+  Result<(Layered<T>, List<Marker>)> restore<T>(
+    Layered<T> document,
+    Object? form,
+  ) {
+    if (form is! Map<String, Object?> ||
+        form['annotations'] is! List<Object?>) {
+      return const Failure(
+        Kind.syntax,
+        'annotations: expected {"annotations": [...]}',
+      );
+    }
+    final entries = form['annotations']! as List<Object?>;
+    // Before any entry is read, so a long form costs nothing past the bound.
+    if (_over(limits.markers, entries.length)) {
+      return _exceeds('annotations', 'markers', entries.length, limits.markers);
+    }
+    final read = <(int, int, ARange, Gravity, Gravity)>[];
+    for (final (index, entry) in entries.indexed) {
+      final at = 'annotations[$index]';
+      switch (_annotation(document, entry, at, limits)) {
+        case Failure(:final kind, :final message):
+          return Failure(kind, message);
+        case Success(:final value):
+          read.add(value);
+      }
+    }
+    final ids = {for (final (_, id, _, _, _) in read) id};
+    if (ids.length != read.length) {
+      return const Failure(Kind.syntax, 'annotations: an id is repeated');
+    }
+    final ordered = ids.toList()..sort();
+    final markers = [for (final _ in ordered) Marker()];
+    final by = {for (final (index, id) in ordered.indexed) id: markers[index]};
+    return document
+        .transact([
+          for (final (layer, id, range, start, end) in read)
+            Edit<T>.annotation(
+              layer,
+              Mark<Object?>.of(by[id]!, range, start: start, end: end),
+            ),
+        ])
+        .map((change) => (change.document.compact(), markers));
+  }
+}
+
+/// The annotation [json] holds, for [document], as its layer, id, range,
+/// and gravities, or the failure at [path].
+Result<(int, int, ARange, Gravity, Gravity)> _annotation<T>(
+  Layered<T> document,
+  Object? json,
+  String path,
+  Limits limits,
+) {
+  if (json is! Map<String, Object?>) {
+    return Failure(Kind.syntax, '$path: expected an object');
+  }
+  final (layer, id) = (json['layer'], json['id']);
+  if (layer is! int || layer < 1 || layer > document.depth) {
+    return Failure(Kind.syntax, '$path.layer: expected 1..${document.depth}');
+  }
+  if (id is! int) {
+    return Failure(Kind.syntax, '$path.id: expected an integer');
+  }
+  final length = layer == 1
+      ? document.items.length
+      : document.layer(layer).length;
+  return _span(json['range'], '$path.range').flatMap(
+    (span) => span.$1 + span.$2 > length
+        ? Failure(
+            Kind.syntax,
+            '$path.range: [${span.$1}, ${span.$2}] is outside 0..$length',
+          )
+        : _gravity(json['start'], '$path.start').flatMap(
+            (start) => _gravity(json['end'], '$path.end').flatMap(
+              (end) =>
+                  _attributes(
+                    json['attributes'],
+                    '$path.attributes',
+                    limits.attributes,
+                  ).map(
+                    (attributes) => (
+                      layer,
+                      id,
+                      ARange.from(extent(span.$1, span.$2), attributes),
+                      start,
+                      end,
+                    ),
+                  ),
+            ),
+          ),
+  );
+}
+
 /// The range, gravities, and attributes of a marker or a mark command.
 Result<Map<String, Object?>> _range(
   ARange range,
@@ -290,11 +435,54 @@ Result<Map<String, Object?>> write<T>(
     end: end,
   ), limits).map((json) => {'command': 'mark', 'id': id(marker), ...json}),
   Unmark(:final marker) => Success({'command': 'unmark', 'id': id(marker)}),
+  Move(:final span, :final to, :final crossings) => Success({
+    'command': 'move',
+    'range': [span.start, span.length],
+    'to': to,
+    if (crossings.isNotEmpty)
+      'crossings': [
+        for (final MapEntry(key: marker, value: crossing) in crossings.entries)
+          [id(marker), crossing.name],
+      ],
+  }),
   Update(:final marker, :final attributes) => _values(
     attributes,
     limits.attributes,
   ).map((json) => {'command': 'update', 'id': id(marker), 'attributes': json}),
 };
+
+/// The decisions a move's [json] records, each a marker's id read by [ids]
+/// and what became of its range: none where [json] is absent.
+Result<List<(int, Crossing)>> _crossings(
+  Object? json,
+  String path,
+  Result<int> Function(Object? json, String path) ids,
+) {
+  if (json == null) {
+    return const Success([]);
+  }
+  if (json is! List<Object?>) {
+    return Failure(Kind.syntax, '$path: expected a list');
+  }
+  final read = <(int, Crossing)>[];
+  for (final (index, pair) in json.indexed) {
+    final at = '$path[$index]';
+    if (pair is! List<Object?> || pair.length != 2) {
+      return Failure(Kind.syntax, '$at: expected an id and a crossing');
+    }
+    final crossing = Crossing.values.where((one) => one.name == pair[1]);
+    if (crossing.isEmpty) {
+      return Failure(Kind.syntax, '$at: unknown crossing');
+    }
+    switch (ids(pair[0], at)) {
+      case Failure(:final kind, :final message):
+        return Failure(kind, message);
+      case Success(:final value):
+        read.add((value, crossing.first));
+    }
+  }
+  return Success(read);
+}
 
 /// A command built once every marker exists, from the markers by id.
 typedef _Build<T> = Command<T> Function(List<Marker> markers);
@@ -574,6 +762,21 @@ read<T>(
             (<_Id>[], (_) => Replace(span, items), span.length, items.length),
       ),
     ),
+    'move' => switch (json['to']) {
+      final int to => range().flatMap(
+        (span) => _crossings(json['crossings'], '$path.crossings', ids).map(
+          (crossings) => (
+            [for (final (id, _) in crossings) (id, '$path.crossings')],
+            (markers) => Move<T>(span, to, {
+              for (final (id, crossing) in crossings) markers[id]: crossing,
+            }),
+            0,
+            0,
+          ),
+        ),
+      ),
+      _ => Failure(Kind.syntax, '$path.to: expected an integer'),
+    },
     'mark' => _mark<T>(
       json,
       path,

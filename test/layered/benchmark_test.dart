@@ -459,6 +459,18 @@ final class Chain implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'chain: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of [depth] layers over two items: every layer above the first
@@ -482,6 +494,18 @@ final class Diamond implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'diamond: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// The XML grammar, with the time spent in it measured by [watch].
@@ -515,6 +539,18 @@ final class Timed implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       _timed(() => _xml.edit(document, change));
+
+  /// As the XML grammar decides.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      _xml.valid(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of depth 2 whose layer 2 is [count] identical ranges over the
@@ -544,6 +580,18 @@ final class Copies implements Grammar<int> {
   @override
   Result<Derivation<int>> edit(Layered<int> document, Edit<int> change) =>
       Failure(Kind.invalid, 'copies: no structural edits');
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// A grammar of depth 2 whose layer 2 holds [count] identical ranges over
@@ -588,4 +636,16 @@ final class Bulk implements Grammar<int> {
       },
     ));
   }
+
+  /// Every range is markup, so only an edit changing none is valid.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) =>
+      kept(document, change);
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }

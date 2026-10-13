@@ -1,5 +1,42 @@
-## Unreleased
+## 0.2.0
 
+- `Move(span, to)` moves items, and the ranges wholly inside them, under
+  their markers. A range crossing an edge of the span is decided by the
+  `crossing` policy `Document.apply` and `transact` take: `Crossing.clamp`,
+  `follow`, or `refuse`, the default. The document logs the move with the
+  decisions it made, so a replay and a JSON history make it the same way.
+  `Grammar.crossing` is the policy a layered document passes; a layer-1
+  move moves the items of each layer above that lie wholly inside it. A
+  replica refuses a move. `transact` logs each move with its decisions, as
+  `apply` does.
+- Mapping a position through a move, by `Document.map` or anchors, takes a
+  position strictly inside the moved items along with them; a move to
+  either edge of its items maps every position to itself. An empty range
+  at the place a move puts items, its start right and its end left, reads
+  as empty at its start, as an insertion leaves it; a move fails for a
+  range turned inside out only where `follow` turns it.
+- `Grammar` has `valid`, the change a text edit makes where it leaves the
+  markup and its diagnostics as they stand, and `escaped`, how text is
+  written as text alone. Both are new members, so every grammar must
+  answer them. The library's `kept` carries out the check: a grammar's
+  `valid` calls it, naming which of its ranges are text, and every range
+  is markup by default. Markup and diagnostics are compared in order, by
+  what each is and what lies under it, not counted.
+- The XML example reports a bare `&` in text, one starting no reference,
+  as a diagnostic, and its structural edits refuse to make or unmake one.
+- `Edit.annotation(layer, command)` marks, updates, and unmarks
+  annotations: ranges of the caller's own over a layer's items, which may
+  cross elements, and which no grammar derives or sees. They move with
+  their layer's items, a move that cuts one clamps it unless the move says
+  otherwise, `Layered.annotations` reads them, and `Layered.gravity` gives
+  their gravities.
+- `AnnotationsFormat` saves a layered document's annotations as JSON, to
+  keep beside the markup `LayeredFormat` saves, and `restore` marks them
+  again on the document decoded from that markup. An annotation over a
+  layer above 1 is saved as indices into that layer.
+- `Change` has a third field, `annotations`, the annotations each layer
+  created, removed, and updated. Code that destructures a `Change` with a
+  record pattern must name it.
 - `ARange` is a `base` class and `ARange.from` a generative constructor, so
   a caller can extend it to say by a range's class what kind of thing it
   is. Equality is unchanged, and a document stores every range as a plain

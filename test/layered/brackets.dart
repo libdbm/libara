@@ -370,6 +370,22 @@ final class Brackets implements Grammar<int> {
       errors,
     );
   }
+
+  /// Accepts a text edit that leaves the brackets, and which of them do not
+  /// pair, as they stand: the brackets are markup, and runs of text are not.
+  @override
+  Result<Change<int>> valid(Layered<int> document, Edit<int> change) => kept(
+    document,
+    change,
+    text: (token) => token.get('type') == kind('text'),
+  );
+
+  @override
+  List<int> escaped(List<int> text, {bool raw = false}) => text;
+
+  @override
+  Crossing crossing(Layered<int> document, int layer, ARange range) =>
+      Crossing.refuse;
 }
 
 /// The token type of a bracket code point.

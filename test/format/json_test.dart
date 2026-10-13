@@ -243,6 +243,23 @@ void main() {
       expect(loaded.previous!.previous!.resolve(markers[id]), isNull);
     });
 
+    test('round-trips a move with what it decided of a crossing range', () {
+      // 'cat s' crosses the end of 'he c', which moves to the end, and is
+      // clamped to the part outside it: a replay with no say of its own
+      // has to do the same.
+      final crossed = Mark<int>(tagged(4, 5));
+      final document = Document.of(Text.of('the cat sat'))
+          .apply(crossed)
+          .unwrap()
+          .apply(Move(span(1, 4), 11), crossing: (_) => Crossing.clamp)
+          .unwrap();
+      final saved = encode(document, text, history: true).unwrap();
+      final (loaded, markers) = restore(wire(saved), text).unwrap();
+      expect(loaded.items, document.items);
+      expect(loaded.ranges.items, document.ranges.items);
+      expect(loaded.previous!.ranges.items, document.previous!.ranges.items);
+    });
+
     test('round-trips an inserted slice, which cannot change after', () {
       final payload = Text.of('ab').slice(0, 2);
       final document = Document.of(Text.of(''))

@@ -1,10 +1,12 @@
 /// The format module: [Format], a two-way mapping between a value and a
-/// serialized form, and [JSONFormat] for documents.
+/// serialized form, [JSONFormat] for documents, and [AnnotationsFormat]
+/// for a layered document's annotations.
 library;
 
 import 'dart:math';
 
 import '../attributed/attributed.dart';
+import '../layered/layered.dart';
 import '../persistent/persistent.dart';
 import '../range/range.dart';
 import '../sequence/sequence.dart';

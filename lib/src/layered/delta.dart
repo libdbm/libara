@@ -65,6 +65,9 @@ Range _span(Command<Object?> command) {
     Insert(:final position, :final items) => (position, items.length),
     Delete(:final span) => (span.start, 0),
     Replace(:final span, :final items) => (span.start, items.length),
+    // Both places, and what lies between them, which the items passed.
+    Move(:final span, :final to) =>
+      to < span.start ? (to, span.end - to) : (span.start, to - span.start),
     _ => (0, 0),
   };
   return positions.extent(start, length);
@@ -109,7 +112,22 @@ List<Delta> _carried<T>(Layered<T> from, List<Change<T>> steps, int layer) {
   for (final step in steps) {
     final after = step.document._document(under);
     for (final command in _between(before, after)) {
-      anchors = anchors.apply(command);
+      // A region stands for what changed rather than following items, so a
+      // move carries it as a deletion then an insertion: a region with one
+      // end among the items moved would otherwise end before it starts.
+      // The move's own region takes in both places.
+      anchors = switch (command) {
+        Move(:final span, :final to) =>
+          anchors
+              .apply(Delete<Object?>(span))
+              .apply(
+                Insert<Object?>(
+                  to < span.start ? to : to - span.length,
+                  Items.of(List<Object?>.filled(span.length, null)),
+                ),
+              ),
+        _ => anchors.apply(command),
+      };
     }
     final pairs = <(Anchor, Anchor)>[];
     for (final region in step.layers[layer - 1].regions) {

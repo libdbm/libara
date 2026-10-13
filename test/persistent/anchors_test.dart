@@ -27,10 +27,16 @@ void main() {
         final length = document.length;
         final start = random.nextInt(length + 1);
         final cut = span(start, random.nextInt(min(3, length - start) + 1));
-        final Command<int> command = switch (random.nextInt(4)) {
+        // A place outside the cut, its edges included, for a move.
+        final places = [
+          for (var place = 0; place <= length; place++)
+            if (place <= cut.start || place >= cut.end) place,
+        ];
+        final Command<int> command = switch (random.nextInt(5)) {
           0 => Insert(start, Text.of('xy'.substring(random.nextInt(2)))),
           1 => Delete(cut),
           2 => Replace(cut, Text.of('z')),
+          3 => Move(cut, places[random.nextInt(places.length)]),
           _ => Mark(tagged(start, 0)),
         };
         document = document.apply(command).unwrap();

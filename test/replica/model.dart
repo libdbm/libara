@@ -70,6 +70,8 @@ final class Model<T> {
           Mark(:final marker, :final range, :final start, :final end) => [
             _mark(operation.keys[marker]!, range, start, end, source, target),
           ],
+          // A replica refuses a move, so none is ever replayed here.
+          Move() => throw UnsupportedError('a move is not replicated'),
           Unmark(:final marker) => [
             if (_marked(operation.keys[marker]!) case final mine?)
               Unmark<T>(mine),
