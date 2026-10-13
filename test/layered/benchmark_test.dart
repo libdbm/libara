@@ -279,6 +279,42 @@ void main() {
     expect(large, lessThan(2 * max(200, small)));
   });
 
+  test('reading the annotations costs what they are, not the document', () {
+    /// Microseconds to read the one annotation over [count] elements.
+    int time(int count) {
+      final document = Layered.of(
+        Text.of('<doc>${'<p>text</p>' * count}</doc>'),
+        XML(),
+      ).unwrap();
+      final noted = document
+          .apply(
+            Edit.annotation(
+              1,
+              Mark<Object?>(ARange.from(extent(8, 2), const {})),
+            ),
+          )
+          .unwrap()
+          .document;
+      final watch = Stopwatch();
+      final times = <int>[];
+      for (var round = 0; round < 9; round++) {
+        watch
+          ..reset()
+          ..start();
+        noted.annotations(1);
+        watch.stop();
+        times.add(watch.elapsedMicroseconds);
+      }
+      return (times..sort())[times.length ~/ 2];
+    }
+
+    time(1000);
+    final (small, large) = (time(1000), time(16000));
+    print('one annotation, 1,000 elements: ${ms(small)}, 16,000: ${ms(large)}');
+    // Flat; walking every mark on the text to find them was linear in it.
+    expect(large, lessThan(2 * max(200, small)));
+  });
+
   test('a chain of touching diagnostics is widened over in time linear in '
       'its length', () {
     /// Microseconds to type into the first of [count] diagnostics, each

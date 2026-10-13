@@ -291,11 +291,19 @@ final class Layered<T> {
     if (layer < 1 || layer > _built) {
       return const [];
     }
-    final noted = _annotations[layer - 1];
-    return List.unmodifiable([
-      for (final pair in _document(layer).markers)
-        if (noted.contains(pair.$1)) pair,
-    ]);
+    // Each found by its marker, so the cost is theirs and not the layer's.
+    final document = _document(layer);
+    final pairs = [
+      for (final marker in _annotations[layer - 1])
+        (marker, document.resolve(marker)!),
+    ];
+    final order = List.generate(pairs.length, (index) => index)
+      ..sort((a, b) {
+        final (x, y) = (pairs[a].$2, pairs[b].$2);
+        final by = x.start != y.start ? x.start - y.start : x.length - y.length;
+        return by != 0 ? by : a - b;
+      });
+    return List.unmodifiable([for (final index in order) pairs[index]]);
   }
 
   /// The gravities of the annotation under [marker] over layer [layer]'s

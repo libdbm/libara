@@ -1,3 +1,7 @@
+## 0.2.1
+
+- Improve annotation performance by not scanning everything, every time.
+
 ## 0.2.0
 
 - `Move(span, to)` moves items, and the ranges wholly inside them, under
@@ -28,7 +32,8 @@
   annotations: ranges of the caller's own over a layer's items, which may
   cross elements, and which no grammar derives or sees. They move with
   their layer's items, a move that cuts one clamps it unless the move says
-  otherwise, `Layered.annotations` reads them, and `Layered.gravity` gives
+  otherwise, `Layered.annotations` reads them, in time following how many
+  there are rather than the layer's size, and `Layered.gravity` gives
   their gravities.
 - `AnnotationsFormat` saves a layered document's annotations as JSON, to
   keep beside the markup `LayeredFormat` saves, and `restore` marks them

@@ -2,7 +2,7 @@ name: libara
 description: >-
   Attributed Range Algebra: overlapping markup as ranges over a persistent,
   editable sequence, with constructors, queries, layered documents, and JSON.
-version: 0.2.0
+version: 0.2.1
 repository: https://github.com/libdbm/libara
 topics:
   - markup
