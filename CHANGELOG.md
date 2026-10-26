@@ -1,3 +1,7 @@
+## 0.2.3
+
+- Fixes for web compatibility and CI issues.
+
 ## 0.2.2
 
 - `Document.having(key)` and `Layered.having(layer, key)` find the ranges

@@ -1,5 +1,4 @@
 import 'dart:math';
-import 'dart:typed_data';
 
 import '../attributed/attributed.dart';
 import '../range/range.dart';
@@ -391,7 +390,8 @@ final class Document<T> with SequenceBase<T> {
       sizes[mark.end] = sizes[mark.end]! + 1;
     }
     final sorted = {
-      for (final MapEntry(:key, :value) in sizes.entries) key: Int64List(value),
+      for (final MapEntry(:key, :value) in sizes.entries)
+        key: List<int>.filled(value, 0),
     };
     final filled = {for (final gravity in Gravity.values) gravity: 0};
     for (var index = 0; index < count; index++) {
@@ -865,8 +865,8 @@ final class Document<T> with SequenceBase<T> {
       high = max(high, marker.sequence);
     }
     final width = high - low + 1;
-    final starts = Int64List(width);
-    final ends = Int64List(width);
+    final starts = List<int>.filled(width, 0);
+    final ends = List<int>.filled(width, 0);
     for (final tree in [_right, _left]) {
       tree.visit((owner, start, position) {
         final at = owner.sequence - low;
