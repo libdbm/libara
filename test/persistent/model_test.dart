@@ -314,7 +314,10 @@ void scripts({
   final random = Random(seed);
   for (var script = 0; script < 200; script++) {
     final start = List.generate(random.nextInt(40), (_) => random.nextInt(100));
-    var document = Document.of(Items.of(start));
+    var document = Document.of(
+      Items.of(start),
+      indexed: const ['step', 'updated'],
+    );
     final model = Model([...start], {});
     final known = <Marker>[];
     // One model snapshot per version, replaced when a command coalesces.
@@ -474,6 +477,25 @@ void scripts({
       expect(document.version, history.length - 1, reason: reason);
       matches(document, model, known, reason);
       expect(check(document), const Success<void>(null), reason: reason);
+      // The same ranges as a walk finds, in start order; ties of start
+      // and length may stand in another order.
+      for (final key in ['step', 'updated']) {
+        final keyed = document.having(key);
+        expect(
+          keyed,
+          unorderedEquals([
+            for (final pair in document.markers)
+              if (pair.$2.attributes.containsKey(key)) pair,
+          ]),
+          reason: reason,
+        );
+        expect(
+          [for (final (_, range) in keyed) (range.start, range.length)],
+          [for (final (_, range) in keyed) (range.start, range.length)]
+            ..sort((a, b) => a.$1 != b.$1 ? a.$1 - b.$1 : a.$2 - b.$2),
+          reason: reason,
+        );
+      }
       survives(document, reason);
       if (containing) {
         contains(document, model, reason);

@@ -1,3 +1,13 @@
+## 0.2.2
+
+- `Document.having(key)` and `Layered.having(layer, key)` find the ranges
+  whose attributes say a key, in start order. A document made with
+  `Document.of(items, indexed: ...)` or `Layered.of(items, grammar, indexed:
+  ...)` indexes those keys in every version, so finding one costs what the
+  ranges found do; any other key is found by walking the ranges. A layer's
+  diagnostics and the annotations over the layer below are not among a
+  layer's ranges.
+
 ## 0.2.1
 
 - Improve annotation performance by not scanning everything, every time.

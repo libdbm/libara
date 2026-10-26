@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../sequence/sequence.dart';
 
 /// A node of a persistent treap: a priority and two children.
@@ -28,31 +30,49 @@ abstract base class Node<N extends Node<N>> {
   N make(N? left, N? right);
 }
 
-/// The roots of [nodes], each a node with no children, built into one
-/// tree in their order, in time linear in their number.
+/// A tree of as many nodes as [priorities], in their order, each with its
+/// priority there, made by [make] once, after its children: [make] is
+/// given a node's index, the index of its parent, or -1 for the root, and
+/// its children as made. Linear in the number of nodes.
 ///
 /// The tree is the one joining them one by one gives: a node keeps every
 /// earlier node of no higher priority below it on its left, as [join] puts
-/// the right tree on top where the priorities tie. Each node is made once,
-/// when its right subtree is known.
-N? built<N extends Node<N>>(Iterable<N> nodes) {
-  // The right spine still open, each node with the left subtree it was
-  // given; its right subtree is what is closed below it.
-  final spine = <(N, N?)>[];
-  for (final node in nodes) {
-    N? closed;
-    while (spine.isNotEmpty && spine.last.$1.priority <= node.priority) {
-      final (open, left) = spine.removeLast();
-      closed = open.make(left, closed);
+/// the right tree on top where the priorities tie. Its shape is worked out
+/// first, from the priorities alone, so no node is made and then made
+/// again over its children.
+N? assembled<N extends Node<N>>(
+  List<int> priorities,
+  N Function(int index, int parent, N? left, N? right) make,
+) {
+  final count = priorities.length;
+  if (count == 0) {
+    return null;
+  }
+  final lefts = Int32List(count)..fillRange(0, count, -1);
+  final rights = Int32List(count)..fillRange(0, count, -1);
+  // The right spine still open, as indices.
+  final spine = Int32List(count);
+  var top = 0;
+  for (var index = 0; index < count; index++) {
+    var below = -1;
+    while (top > 0 && priorities[spine[top - 1]] <= priorities[index]) {
+      below = spine[--top];
     }
-    spine.add((node, closed));
+    lefts[index] = below;
+    if (top > 0) {
+      rights[spine[top - 1]] = index;
+    }
+    spine[top++] = index;
   }
-  N? closed;
-  while (spine.isNotEmpty) {
-    final (open, left) = spine.removeLast();
-    closed = open.make(left, closed);
-  }
-  return closed;
+  N? made(int index, int parent) => index < 0
+      ? null
+      : make(
+          index,
+          parent,
+          made(lefts[index], index),
+          made(rights[index], index),
+        );
+  return made(spine[0], -1);
 }
 
 /// The roots [left] and [right] joined into one tree, every node of [left]

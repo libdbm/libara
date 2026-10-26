@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:typed_data';
+
 import '../attributed/attributed.dart';
 import '../range/range.dart';
 import '../sequence/sequence.dart';
@@ -18,13 +21,53 @@ typedef _Entry = ({
   Map<String, Value> attributes,
 });
 
+/// For each attribute key a document indexes, the markers whose ranges
+/// say it. A key it does not index has no entry.
+typedef _Keys = Map<String, Index<bool>>;
+
 /// The structures that make up one version: the items, one endpoint tree
-/// per gravity, and the marker index.
+/// per gravity, the marker index, and the markers by attribute key.
 typedef _Parts<T> = ({
   Content<T> content,
   Endpoints<Marker> right,
   Endpoints<Marker> left,
   Index<_Entry> index,
+  _Keys keys,
+});
+
+/// [keys] with [marker] taken out under each of [taken] and put in under
+/// each of [put] that [keys] indexes: a copy, sharing every key's markers
+/// it leaves alone.
+_Keys _rekeyed(
+  _Keys keys,
+  Marker marker,
+  Iterable<String> taken,
+  Iterable<String> put,
+) {
+  final out = [
+    for (final key in taken)
+      if (keys.containsKey(key)) key,
+  ];
+  final into = [
+    for (final key in put)
+      if (keys.containsKey(key)) key,
+  ];
+  if (out.isEmpty && into.isEmpty) {
+    return keys;
+  }
+  final next = {...keys};
+  for (final key in out) {
+    next[key] = next[key]!.remove(marker);
+  }
+  for (final key in into) {
+    next[key] = next[key]!.put(marker, true);
+  }
+  return Map.unmodifiable(next);
+}
+
+/// No markers yet under each of [indexed].
+_Keys _unkeyed(Iterable<String> indexed) => Map.unmodifiable({
+  for (final key in indexed) key: const Index<bool>.empty(),
 });
 
 /// A persistent, versioned sequence whose ranges move with its items.
@@ -37,16 +80,19 @@ final class Document<T> with SequenceBase<T> {
     : _content = parts.content,
       _right = parts.right,
       _left = parts.left,
-      _index = parts.index;
+      _index = parts.index,
+      _keys = parts.keys;
 
-  /// Version 0 of a document holding [items].
-  Document.of(Sequence<T> items)
+  /// Version 0 of a document holding [items], whose ranges saying one of
+  /// [indexed] [having] finds by key, as every later version does.
+  Document.of(Sequence<T> items, {Iterable<String> indexed = const []})
     : this._(
         (
           content: Content.of(items.items),
           right: const Endpoints.empty(),
           left: const Endpoints.empty(),
           index: const Index.empty(),
+          keys: _unkeyed(indexed),
         ),
         0,
         null,
@@ -61,6 +107,7 @@ final class Document<T> with SequenceBase<T> {
           right: const Endpoints.empty(),
           left: const Endpoints.empty(),
           index: const Index.empty(),
+          keys: const {},
         ),
         0,
         null,
@@ -77,8 +124,15 @@ final class Document<T> with SequenceBase<T> {
 
   final Index<_Entry> _index;
 
-  _Parts<T> get _parts =>
-      (content: _content, right: _right, left: _left, index: _index);
+  final _Keys _keys;
+
+  _Parts<T> get _parts => (
+    content: _content,
+    right: _right,
+    left: _left,
+    index: _index,
+    keys: _keys,
+  );
 
   Endpoints<Marker> _tree(Gravity gravity) =>
       gravity == Gravity.right ? _right : _left;
@@ -134,6 +188,7 @@ final class Document<T> with SequenceBase<T> {
                 right: _right.shift(position, items.length),
                 left: _left.shift(position + 1, items.length),
                 index: _index,
+                keys: _keys,
               ),
             ),
       Delete(:final span) =>
@@ -145,6 +200,7 @@ final class Document<T> with SequenceBase<T> {
                 right: _right.collapse(span.start, span.end),
                 left: _left.collapse(span.start, span.end),
                 index: _index,
+                keys: _keys,
               ),
             ),
       // A deletion then an insertion at the span's start, with the same
@@ -165,6 +221,7 @@ final class Document<T> with SequenceBase<T> {
                       .collapse(span.start, span.end)
                       .shift(span.start + 1, items.length),
                   index: _index,
+                  keys: _keys,
                 ),
               ),
       },
@@ -321,47 +378,71 @@ final class Document<T> with SequenceBase<T> {
   /// order them, then labelled evenly and built in one pass.
   _Parts<T> _markAll(List<Mark<T>> marks) {
     // Each endpoint goes after those already at its position, so ties keep
-    // the order of the marks, and a range's start comes before its end.
-    int order((int, int, bool) a, (int, int, bool) b) => a.$1 != b.$1
-        ? a.$1 - b.$1
-        : a.$2 != b.$2
-        ? a.$2 - b.$2
-        : a.$3
-        ? -1
-        : 1;
-    final trees = {
-      for (final gravity in Gravity.values) gravity: <(int, int, bool)>[],
-    };
-    for (final (index, mark) in marks.indexed) {
-      trees[mark.start]!.add((mark.range.start, index, true));
-      trees[mark.end]!.add((mark.range.end, index, false));
+    // the order of the marks, and a range's start comes before its end: so
+    // each is ordered by its position, its mark, and whether it ends, which
+    // one integer holds, and integers sort without a comparison to call.
+    final count = marks.length;
+    int key(int position, int index, bool start) =>
+        (position * count + index) * 2 + (start ? 0 : 1);
+    // Each tree's keys in a list of the size it will be, filled in place.
+    final sizes = {for (final gravity in Gravity.values) gravity: 0};
+    for (final mark in marks) {
+      sizes[mark.start] = sizes[mark.start]! + 1;
+      sizes[mark.end] = sizes[mark.end]! + 1;
     }
-    final firsts = List<Label?>.filled(marks.length, null);
-    final lasts = List<Label?>.filled(marks.length, null);
-    for (final endpoints in trees.values) {
-      endpoints.sort(order);
+    final sorted = {
+      for (final MapEntry(:key, :value) in sizes.entries) key: Int64List(value),
+    };
+    final filled = {for (final gravity in Gravity.values) gravity: 0};
+    for (var index = 0; index < count; index++) {
+      final mark = marks[index];
+      sorted[mark.start]![filled[mark.start]!] = key(
+        mark.range.start,
+        index,
+        true,
+      );
+      filled[mark.start] = filled[mark.start]! + 1;
+      sorted[mark.end]![filled[mark.end]!] = key(mark.range.end, index, false);
+      filled[mark.end] = filled[mark.end]! + 1;
+    }
+    // Marks come in start order, so a tree's keys are often in order
+    // already, and a look costs less than a sort.
+    for (final keys in sorted.values) {
+      for (var at = 1; at < keys.length; at++) {
+        if (keys[at - 1] > keys[at]) {
+          keys.sort();
+          break;
+        }
+      }
+    }
+    final firsts = List<Label?>.filled(count, null);
+    final lasts = List<Label?>.filled(count, null);
+    for (final endpoints in sorted.values) {
       final labels = Label.spread(endpoints.length);
-      for (final (index, (_, mark, start)) in endpoints.indexed) {
-        (start ? firsts : lasts)[mark] = labels[index];
+      for (var at = 0; at < endpoints.length; at++) {
+        final mark = endpoints[at] ~/ 2 % count;
+        (endpoints[at].isEven ? firsts : lasts)[mark] = labels[at];
       }
     }
     Endpoints<Marker> build(Gravity gravity) => Endpoints.of([
-      for (final (position, index, start) in trees[gravity]!)
-        (
+      for (final endpoint in sorted[gravity]!)
+        if ((endpoint ~/ 2) % count case final index)
           (
-            position: position,
-            label: (start ? firsts : lasts)[index]!,
-            owner: marks[index].marker,
-            start: start,
-            partner: start ? lasts[index] : null,
+            (
+              position: endpoint ~/ 2 ~/ count,
+              label: (endpoint.isEven ? firsts : lasts)[index]!,
+              owner: marks[index].marker,
+              start: endpoint.isEven,
+              partner: endpoint.isEven ? lasts[index] : null,
+            ),
+            marks[index].start != marks[index].end,
           ),
-          marks[index].start != marks[index].end,
-        ),
     ]);
     return (
       content: _content,
       right: build(Gravity.right),
       left: build(Gravity.left),
+      keys: _grouped(marks, _keys.keys),
       index: Index.of([
         for (final (at, mark) in marks.indexed)
           (
@@ -377,6 +458,16 @@ final class Document<T> with SequenceBase<T> {
       ]),
     );
   }
+
+  /// The markers of [marks] under each of [indexed] their ranges say.
+  static _Keys _grouped<T>(List<Mark<T>> marks, Iterable<String> indexed) =>
+      Map.unmodifiable({
+        for (final key in indexed)
+          key: Index.of([
+            for (final mark in marks)
+              if (mark.range.attributes.containsKey(key)) (mark.marker, true),
+          ]),
+      });
 
   Result<_Parts<T>> _mark(
     ARange range,
@@ -426,6 +517,7 @@ final class Document<T> with SequenceBase<T> {
         right: parts.right,
         left: parts.left,
         index: _index.put(marker, entry),
+        keys: _rekeyed(_keys, marker, const [], range.attributes.keys),
       );
     });
   }
@@ -529,6 +621,7 @@ final class Document<T> with SequenceBase<T> {
                 right: const Endpoints.empty(),
                 left: const Endpoints.empty(),
                 index: const Index.empty(),
+                keys: _unkeyed(_keys.keys),
               ),
               version,
               previous,
@@ -569,6 +662,7 @@ final class Document<T> with SequenceBase<T> {
       right: parts.right,
       left: parts.left,
       index: _index.remove(marker),
+      keys: _rekeyed(_keys, marker, entry.attributes.keys, const []),
     ));
   }
 
@@ -588,6 +682,18 @@ final class Document<T> with SequenceBase<T> {
         end: entry.end,
         attributes: attributes,
       )),
+      keys: _rekeyed(
+        _keys,
+        marker,
+        [
+          for (final key in entry.attributes.keys)
+            if (!attributes.containsKey(key)) key,
+        ],
+        [
+          for (final key in attributes.keys)
+            if (!entry.attributes.containsKey(key)) key,
+        ],
+      ),
     ));
   }
 
@@ -601,6 +707,7 @@ final class Document<T> with SequenceBase<T> {
     right: gravity == Gravity.right ? tree : parts.right,
     left: gravity == Gravity.left ? tree : parts.left,
     index: parts.index,
+    keys: parts.keys,
   );
 
   /// Nothing, or a failure for the first endpoint that disagrees with the
@@ -645,6 +752,35 @@ final class Document<T> with SequenceBase<T> {
         'document: ${_index.length} markers, $starts starts, $ends ends',
       );
     }
+    // Every marker under a key says it, and every key a marker says has
+    // it: as many pairs both ways.
+    var keyed = 0;
+    for (final MapEntry(:key, value: held) in _keys.entries) {
+      for (final marker in held.markers) {
+        if (_index.get(marker)?.attributes.containsKey(key) != true) {
+          return Failure(
+            Kind.invalid,
+            'document: $marker is keyed under $key but does not say it',
+          );
+        }
+        keyed++;
+      }
+    }
+    var said = 0;
+    for (final marker in _index.markers) {
+      said += _index
+          .get(marker)!
+          .attributes
+          .keys
+          .where(_keys.containsKey)
+          .length;
+    }
+    if (keyed != said) {
+      return Failure(
+        Kind.invalid,
+        'document: $keyed markers keyed, $said keys said',
+      );
+    }
     return const Success(null);
   }
 
@@ -683,6 +819,7 @@ final class Document<T> with SequenceBase<T> {
         right: _right.relabel(right, left),
         left: _left.relabel(left, right),
         index: index,
+        keys: _keys,
       ),
       0,
       null,
@@ -692,8 +829,10 @@ final class Document<T> with SequenceBase<T> {
 
   /// The range from [start] to [end] as read: an end before its start reads
   /// as zero-length at the start.
+  // Every range's attributes here were made unmodifiable as they were
+  // marked or updated, so a range read from them shares them.
   static ARange _read(int start, int end, Map<String, Value> attributes) =>
-      ARange.from(extent(start, end < start ? 0 : end - start), attributes);
+      sharing(start, end < start ? 0 : end - start, attributes);
 
   /// The current range for [marker], or `null` when it is not marked in
   /// this version.
@@ -705,6 +844,48 @@ final class Document<T> with SequenceBase<T> {
     final start = _tree(entry.start).position(entry.first, marker)!;
     final end = _tree(entry.end).position(entry.last, marker)!;
     return _read(start, end, entry.attributes);
+  }
+
+  /// The current range for each of [markers], in their order, each `null`
+  /// where it is not marked in this version.
+  ///
+  /// Where they are many against the document's ranges, their positions
+  /// are read off one walk over both endpoint trees, in time linear in the
+  /// ranges, rather than found by a descent for each endpoint.
+  List<ARange?> resolveAll(List<Marker> markers) {
+    if (markers.isEmpty || markers.length * 16 < _index.length) {
+      return [for (final marker in markers) resolve(marker)];
+    }
+    // Markers made together have sequences close together, so their
+    // positions go in lists by sequence rather than in a map.
+    var low = markers.first.sequence;
+    var high = low;
+    for (final marker in markers) {
+      low = min(low, marker.sequence);
+      high = max(high, marker.sequence);
+    }
+    final width = high - low + 1;
+    final starts = Int64List(width);
+    final ends = Int64List(width);
+    for (final tree in [_right, _left]) {
+      tree.visit((owner, start, position) {
+        final at = owner.sequence - low;
+        if (at >= 0 && at < width) {
+          (start ? starts : ends)[at] = position;
+        }
+      });
+    }
+    return [
+      for (final marker in markers)
+        switch (_index.get(marker)) {
+          null => null,
+          final entry => _read(
+            starts[marker.sequence - low],
+            ends[marker.sequence - low],
+            entry.attributes,
+          ),
+        },
+    ];
   }
 
   /// The gravity of each endpoint of [marker], or `null` when it is not
@@ -775,6 +956,25 @@ final class Document<T> with SequenceBase<T> {
             (marker, range),
     ]);
   }
+
+  /// Every marked range whose attributes say [key], with its marker, in
+  /// start order.
+  ///
+  /// For a key the document was made to index, found by key, so the cost
+  /// follows the ranges found: `O(k log n)` for `k` of them among `n`. For
+  /// any other, a walk of every range.
+  List<(Marker, ARange)> having(String key) => switch (_keys[key]) {
+    final held? => _ordered([
+      for (final marker in held.markers) (marker, resolve(marker)!),
+    ]),
+    null => List.unmodifiable([
+      for (final pair in markers)
+        if (pair.$2.attributes.containsKey(key)) pair,
+    ]),
+  };
+
+  /// The attribute keys this document indexes, which [having] finds by key.
+  Iterable<String> get indexed => _keys.keys;
 
   /// [pairs] in start order: by start, then by length, ties as found.
   static List<(Marker, ARange)> _ordered(List<(Marker, ARange)> pairs) {

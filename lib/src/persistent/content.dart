@@ -22,12 +22,21 @@ final class Content<T> {
   /// Content holding [source] in iteration order.
   factory Content.of(Iterable<T> source) {
     final list = source.toList();
-    _Node<T>? root;
-    for (var start = 0; start < list.length; start += _chunk) {
-      final end = min(start + _chunk, list.length);
-      root = join(root, _Node.leaf(list.sublist(start, end)));
-    }
-    return Content._(root);
+    final chunks = (list.length + _chunk - 1) ~/ _chunk;
+    final ranks = [for (var at = 0; at < chunks; at++) priorities.priority()];
+    return Content._(
+      assembled(ranks, (index, _, left, right) {
+        final start = index * _chunk;
+        return _Node(
+          List.unmodifiable(
+            list.sublist(start, min(start + _chunk, list.length)),
+          ),
+          left,
+          right,
+          ranks[index],
+        );
+      }),
+    );
   }
 
   final _Node<T>? _root;
@@ -128,9 +137,6 @@ final class _Node<T> extends Node<_Node<T>> {
     _joined(left?.measure, own),
     right?.measure,
   )!;
-
-  _Node.leaf(List<T> chunk)
-    : this(List.unmodifiable(chunk), null, null, priorities.priority());
 
   final List<T> chunk;
   @override

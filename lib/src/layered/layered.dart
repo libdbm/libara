@@ -97,35 +97,37 @@ final class Layered<T> {
   );
 
   /// Version 0 of a layered document over [items], every layer derived by
-  /// [grammar], whose depth is read once, here.
+  /// [grammar], whose depth is read once, here. The ranges saying one of
+  /// [indexed], at every layer, [having] finds by key.
   ///
   /// A depth below 1, or a depth getter that throws, is a [Kind.invalid]
   /// failure. Nothing else fails: what does not parse becomes diagnostics,
   /// and so does a range the grammar returns outside the region it was
   /// asked about.
-  static Result<Layered<S>> of<S>(Sequence<S> items, Grammar<S> grammar) =>
-      switch (_ask('depth', () => grammar.depth)) {
-        Failure(:final kind, :final message) => Failure(
-          kind,
-          'layered: $message',
-        ),
-        Success(value: final depth) when depth < 1 => Failure(
-          Kind.invalid,
-          'layered: grammar: depth $depth is below 1',
-        ),
-        Success(value: final depth) => _derived(items, grammar, depth),
-      };
+  static Result<Layered<S>> of<S>(
+    Sequence<S> items,
+    Grammar<S> grammar, {
+    Iterable<String> indexed = const [],
+  }) => switch (_ask('depth', () => grammar.depth)) {
+    Failure(:final kind, :final message) => Failure(kind, 'layered: $message'),
+    Success(value: final depth) when depth < 1 => Failure(
+      Kind.invalid,
+      'layered: grammar: depth $depth is below 1',
+    ),
+    Success(value: final depth) => _derived(items, grammar, depth, indexed),
+  };
 
   /// Version 0 over [items], with layers 2 to [depth] derived by [grammar].
   static Result<Layered<S>> _derived<S>(
     Sequence<S> items,
     Grammar<S> grammar,
     int depth,
+    Iterable<String> indexed,
   ) {
     var document = Layered<S>._(
       grammar,
       depth,
-      Document.of(items),
+      Document.of(items, indexed: indexed),
       const [],
       const [],
       List.unmodifiable(List.filled(depth, const <Marker>{})),
@@ -263,6 +265,24 @@ final class Layered<T> {
   List<(Marker, ARange)> crossing(int layer, int position) =>
       _ranges(layer, (document) => document.crossing(position));
 
+  /// Layer [layer]'s ranges whose attributes say [key], each with its
+  /// marker, in start order over the items of the layer below. Empty
+  /// outside `2..depth`. Found by key rather than by walking the layer, so
+  /// the cost follows the ranges found, as [Document.having]'s does; the
+  /// layer's diagnostics and the annotations over the layer below are not
+  /// among them.
+  List<(Marker, ARange)> having(int layer, String key) {
+    if (layer < 2 || layer > _built) {
+      return const [];
+    }
+    final flagged = _flagged[layer - 2];
+    final noted = _annotations[layer - 2];
+    return List.unmodifiable([
+      for (final pair in _document(layer - 1).having(key))
+        if (!flagged.contains(pair.$1) && !noted.contains(pair.$1)) pair,
+    ]);
+  }
+
   /// Layer [layer]'s items at the indices in [indices], clamped to the
   /// layer, each with its marker, in the layer's order: a region of the
   /// layer as the layer above sees it. Empty outside `2..depth`.
@@ -272,14 +292,17 @@ final class Layered<T> {
     }
     final below = _document(layer - 1);
     final items = _upper[layer - 2];
-    return List.unmodifiable([
+    final markers = [
       for (
         var index = indices.start;
         index < min(indices.end, items.length);
         index++
       )
-        if (items.item(index) case final marker?)
-          (marker, below.resolve(marker)!),
+        ?items.item(index),
+    ];
+    final ranges = below.resolveAll(markers);
+    return List.unmodifiable([
+      for (var at = 0; at < markers.length; at++) (markers[at], ranges[at]!),
     ]);
   }
 
@@ -742,7 +765,10 @@ final class Layered<T> {
         grammar,
         depth,
         layer == 2 ? placed as Document<T> : _base,
-        List.unmodifiable([...upper, Document.of(Items.of(ranges))]),
+        List.unmodifiable([
+          ...upper,
+          Document.of(Items.of(ranges), indexed: _base.indexed),
+        ]),
         List.unmodifiable([..._flagged, Set<Marker>.unmodifiable(flagged)]),
         _annotations,
         version,

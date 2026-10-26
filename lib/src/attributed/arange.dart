@@ -17,6 +17,10 @@ base class ARange extends Range {
   ARange._(this.start, this.length, Map<String, Value> attributes)
     : attributes = Map.unmodifiable(attributes);
 
+  /// A range from [start] of [length] keeping [attributes] as they are,
+  /// which no one may change, such as another range's.
+  ARange._sharing(this.start, this.length, this.attributes);
+
   /// An attributed range at the position of [range].
   ///
   /// The map is copied, so later changes to the argument have no effect.
@@ -76,16 +80,20 @@ base class ARange extends Range {
   ///
   /// A negative resulting start is a [Kind.bounds] failure.
   @override
-  Result<ARange> move(int delta) =>
-      super.move(delta).map((moved) => ARange.from(moved, attributes));
+  Result<ARange> move(int delta) => super
+      .move(delta)
+      .map((moved) => ARange._sharing(moved.start, moved.length, attributes));
 
   /// This range with its length changed by [delta], keeping every
   /// attribute.
   ///
   /// A negative resulting length is a [Kind.bounds] failure.
   @override
-  Result<ARange> resize(int delta) =>
-      super.resize(delta).map((resized) => ARange.from(resized, attributes));
+  Result<ARange> resize(int delta) => super
+      .resize(delta)
+      .map(
+        (resized) => ARange._sharing(resized.start, resized.length, attributes),
+      );
 
   /// Whether [other] has the same position and equal attributes: the
   /// paper's Equals.
@@ -126,3 +134,10 @@ base class ARange extends Range {
 bool alike(Map<String, Value> a, Map<String, Value> b) =>
     a.length == b.length &&
     a.entries.every((entry) => b[entry.key] == entry.value);
+
+/// A range from [start] of [length] keeping [attributes] as they are,
+/// rather than copying them as [ARange.from] does: for libara's own use,
+/// where [attributes] is a map no one may change, such as another range's.
+/// Hidden from the public `libara` library.
+ARange sharing(int start, int length, Map<String, Value> attributes) =>
+    ARange._sharing(start, length, attributes);

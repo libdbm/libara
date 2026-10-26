@@ -35,24 +35,53 @@ final class Endpoints<O> {
   ///
   /// The positions must never decrease and the labels must increase, as in
   /// [entries].
-  factory Endpoints.of(Iterable<(Endpoint<O>, bool)> endpoints) => Endpoints._(
-    built([
-      for (final (endpoint, elsewhere) in endpoints)
-        _Node.leaf(
-          endpoint.position,
+  factory Endpoints.of(Iterable<(Endpoint<O>, bool)> endpoints) {
+    final all = endpoints.toList();
+    final ranks = [for (final _ in all) priorities.priority()];
+    // Each made once, its position stored relative to its parent's.
+    return Endpoints._(
+      assembled(ranks, (index, parent, left, right) {
+        final (endpoint, elsewhere) = all[index];
+        return _Node(
+          parent < 0
+              ? endpoint.position
+              : endpoint.position - all[parent].$1.position,
           endpoint.label,
           endpoint.owner,
           endpoint.start,
           endpoint.partner,
           elsewhere,
-        ),
-    ]),
-  );
+          ranks[index],
+          left,
+          right,
+          false,
+        );
+      }),
+    );
+  }
 
   final _Node<O>? _root;
 
   /// Every endpoint in order.
   Iterable<Endpoint<O>> get entries => _walk(_root);
+
+  /// [each] called with the owner, the kind and the absolute position of
+  /// every endpoint, in no particular order, making nothing for each.
+  void visit(void Function(O owner, bool start, int position) each) {
+    void walk(_Node<O> node, int at, bool flat) {
+      each(node.owner, node.start, at);
+      if (node.left case final left?) {
+        walk(left, flat ? at : at + left.offset, flat || left.flat);
+      }
+      if (node.right case final right?) {
+        walk(right, flat ? at : at + right.offset, flat || right.flat);
+      }
+    }
+
+    if (_root case final root?) {
+      walk(root, root.offset, root.flat);
+    }
+  }
 
   /// The two endpoints of a range from [start] to [end], owned by [owner],
   /// and the labels that find them again.

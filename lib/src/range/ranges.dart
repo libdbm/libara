@@ -140,6 +140,16 @@ final class Ranges with SequenceBase<Range> {
   /// A stable sort. Dart's [List.sort] is not guaranteed stable, so ties
   /// are broken by original position.
   Ranges _sort(int Function(Range a, Range b) compare) {
+    // Ranges a grammar reads come in order, and a stable sort leaves
+    // ranges in order as they are, so a look saves the sorting.
+    final list = items.toList();
+    var ordered = true;
+    for (var at = 1; at < list.length && ordered; at++) {
+      ordered = compare(list[at - 1], list[at]) <= 0;
+    }
+    if (ordered) {
+      return Ranges.of(list);
+    }
     final indexed = items.indexed.toList()
       ..sort((a, b) {
         final order = compare(a.$2, b.$2);

@@ -2,7 +2,7 @@
 /// ranges for modelling markup outside the data it describes.
 library;
 
-export 'src/attributed/attributed.dart' hide alike;
+export 'src/attributed/attributed.dart' hide alike, sharing;
 export 'src/format/format.dart' hide read, write;
 export 'src/constructor/constructor.dart';
 export 'src/coordinate/coordinate.dart';
